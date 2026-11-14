@@ -67,11 +67,11 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
     fun start() {
         scope.launch {
             while (isActive) {
-                val now = SystemClock.elapsedRealtime()
                 val managed = runCatching { telecom?.isInManagedCall }.getOrNull()
                 val phoneState = callState()
                 val isRinging = phoneState == TelephonyManager.CALL_STATE_RINGING
                 val s = if (isRinging) null else runCatching { screen() }.getOrNull()
+                val now = SystemClock.elapsedRealtime()
                 if (current == null && isRinging && managed == true) seenRinging = true
                 if (phoneState == TelephonyManager.CALL_STATE_IDLE || managed == false) wasOffHook = false
                 if (phoneState == TelephonyManager.CALL_STATE_OFFHOOK) wasOffHook = true
