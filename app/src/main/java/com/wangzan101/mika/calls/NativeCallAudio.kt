@@ -1,5 +1,6 @@
 package com.wangzan101.mika.calls
 
+import android.media.AudioManager
 import android.os.Binder
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
@@ -31,6 +32,10 @@ internal class NativeCallAudio(private val app: MikaApp) {
         var capture: ParcelFileDescriptor.AutoCloseInputStream? = null
         var playback: ParcelFileDescriptor.AutoCloseOutputStream? = null
         var opened = false
+        val audio = app.getSystemService(AudioManager::class.java)
+        fun audioTargetCurrent(): Boolean = stillCurrent() &&
+            app.phone.hub.shell.value === helper && runtime.settings.state.value.enabled &&
+            runtime.settings.state.value.audioMode == config.audioMode && audio.isMicrophoneMute
         try {
             val voice = withTimeout(8_000) {
                 VolcRealtimeProvider().connect(profile, credentials, prompt).also { session = it }
@@ -39,20 +44,29 @@ internal class NativeCallAudio(private val app: MikaApp) {
             check(stillCurrent()) { "通话界面已变化" }
             acquireMute()
             check(stillCurrent()) { "通话界面已变化" }
-            opened = true
-            val channel = withContext(NonCancellable + Dispatchers.IO) {
-                val b = helper.openCallAudio(mode, owner)
-                check(b?.getBoolean("ready") == true) { b?.getString("reason") ?: "双向音频不可用" }
-                @Suppress("DEPRECATION")
-                val down = b.getParcelable<ParcelFileDescriptor>("downlink")
-                @Suppress("DEPRECATION")
-                val up = b.getParcelable<ParcelFileDescriptor>("uplink")
-                capture = down?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
-                playback = up?.let { ParcelFileDescriptor.AutoCloseOutputStream(it) }
-                check(capture != null && playback != null && b.getInt("captureRate") == voice.inputSampleRate &&
-                    b.getInt("playRate") == voice.outputSampleRate) { "电话音频格式不兼容" }
-                CallPcmBridge(checkNotNull(capture), checkNotNull(playback)) {
-                    withContext(Dispatchers.IO) { helper.flushCallAudio(owner) }
+            val channel = awaitCallAudioOpen(
+                isCurrent = ::audioTargetCurrent,
+                nowMs = SystemClock::elapsedRealtime,
+            ) {
+                // Adopt descriptors before cancellation; only resource-free readiness failures retry.
+                withContext(NonCancellable + Dispatchers.IO) {
+                    opened = true
+                    val b = helper.openCallAudio(mode, owner)
+                    if (b?.getBoolean("ready") != true) {
+                        if (b?.getString("errorCode") == "cellular_audio_not_ready") return@withContext null
+                        error(b?.getString("reason") ?: "双向音频不可用")
+                    }
+                    @Suppress("DEPRECATION")
+                    val down = b.getParcelable<ParcelFileDescriptor>("downlink")
+                    @Suppress("DEPRECATION")
+                    val up = b.getParcelable<ParcelFileDescriptor>("uplink")
+                    capture = down?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
+                    playback = up?.let { ParcelFileDescriptor.AutoCloseOutputStream(it) }
+                    check(capture != null && playback != null && b.getInt("captureRate") == voice.inputSampleRate &&
+                        b.getInt("playRate") == voice.outputSampleRate) { "电话音频格式不兼容" }
+                    CallPcmBridge(checkNotNull(capture), checkNotNull(playback)) {
+                        withContext(Dispatchers.IO) { helper.flushCallAudio(owner) }
+                    }
                 }
             }
             currentCoroutineContext().ensureActive()
@@ -67,8 +81,7 @@ internal class NativeCallAudio(private val app: MikaApp) {
                         var ready = false
                         while (true) {
                             delay(400)
-                            check(stillCurrent() && app.phone.hub.shell.value === helper &&
-                                runtime.settings.state.value.enabled) { "通话或助手状态已变化" }
+                            check(audioTargetCurrent()) { "通话或助手状态已变化" }
                             val stats = withContext(Dispatchers.IO) { helper.callAudioStats(owner) }
                             check(stats?.getBoolean("active") == true) { "音频助手已断开" }
                             val bytes = stats.getLong("downBytes")

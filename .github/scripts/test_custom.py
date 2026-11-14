@@ -64,3 +64,14 @@ class IdentityTest(unittest.TestCase):
         self.assertIn("app.capsule.phoneControl", read(pkg / "calls/NativeCallOverlay.kt"))
         self.assertIn("onTranscript =", read(pkg / "calls/NativeCallAudio.kt"))
         self.assertIn("!state.systemPhone", read(pkg / "ui/CallSettingsScreen.kt"))
+
+
+class NativeAudioCompatibilityTest(unittest.TestCase):
+    def test_native_audio_reuses_bounded_upstream_open_gate(self):
+        source = (ROOT / "app/src/main/java/com/wangzan101/mika/calls/NativeCallAudio.kt").read_text()
+        self.assertIn("val channel = awaitCallAudioOpen(", source)
+        self.assertIn("isCurrent = ::audioTargetCurrent", source)
+        self.assertIn('b?.getString("errorCode") == "cellular_audio_not_ready"', source)
+        self.assertIn("audio.isMicrophoneMute", source)
+        self.assertIn("runtime.settings.state.value.audioMode == config.audioMode", source)
+        self.assertIn("check(audioTargetCurrent())", source)
