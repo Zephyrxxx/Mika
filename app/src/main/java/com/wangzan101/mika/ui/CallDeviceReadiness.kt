@@ -3,6 +3,7 @@ package com.wangzan101.mika.ui
 import android.Manifest
 import android.app.ActivityManager
 import android.app.NotificationManager
+import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -70,6 +71,8 @@ internal data class CallDeviceReadiness(
 
 internal data class CallDeviceControls(
     val readiness: CallDeviceReadiness,
+    val needsDialerRole: Boolean,
+    val requestDialerRole: () -> Unit,
     val phoneActionLabel: Int,
     val notificationActionLabel: Int,
     val phoneAction: () -> Unit,
@@ -84,17 +87,23 @@ internal fun rememberCallDeviceControls(runtime: CallRuntime, onSettingsError: (
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val scope = rememberCoroutineScope()
+    val roles = context.getSystemService(RoleManager::class.java)
+    fun needsDialerRole() = roles?.isRoleAvailable(RoleManager.ROLE_DIALER) == true &&
+        !roles.isRoleHeld(RoleManager.ROLE_DIALER)
+    var missingDialerRole by remember(context) { mutableStateOf(needsDialerRole()) }
     var status by remember(context) { mutableStateOf(readCallDeviceReadiness(context)) }
     var phoneDenied by rememberSaveable { mutableStateOf(false) }
     var notificationDenied by rememberSaveable { mutableStateOf(false) }
 
     fun readBack() {
+        missingDialerRole = needsDialerRole()
         status = readCallDeviceReadiness(context)
         if (status.phoneAllowed) phoneDenied = false
         if (status.notificationBlock != CallNotificationBlock.Permission) notificationDenied = false
         scope.launch { runtime.refresh() }
     }
 
+    val requestDialer = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { readBack() }
     val requestPhone = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         readBack()
         phoneDenied = !status.phoneAllowed
@@ -137,6 +146,18 @@ internal fun rememberCallDeviceControls(runtime: CallRuntime, onSettingsError: (
     val requestNotification = status.notificationBlock == CallNotificationBlock.Permission && !notificationDenied
     return CallDeviceControls(
         readiness = status,
+        needsDialerRole = missingDialerRole,
+        requestDialerRole = {
+            if (roles != null && needsDialerRole()) {
+                try {
+                    requestDialer.launch(roles.createRequestRoleIntent(RoleManager.ROLE_DIALER))
+                } catch (_: ActivityNotFoundException) {
+                    openSettings(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+                } catch (_: SecurityException) {
+                    openSettings(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+                }
+            } else readBack()
+        },
         phoneActionLabel = if (phoneDenied) R.string.calls_device_open_app_settings else R.string.calls_device_allow_phone,
         notificationActionLabel = if (requestNotification) R.string.calls_device_allow_notifications else R.string.calls_notification_settings,
         phoneAction = {
