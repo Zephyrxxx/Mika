@@ -511,12 +511,12 @@ private fun CallReceivePage(
     val autoLabel = stringResource(R.string.calls_auto_answer)
     val idle = state.phase == CallPhase.IDLE
     val enabled = controlsEnabled && (config.autoAnswer || idle)
-    val needsSetup = !ready || state.systemPhone || !config.audioVerified
+    val setupComplete = ready && !state.systemPhone && config.audioVerified
     val hint = when {
         config.autoAnswer -> null
         !idle -> R.string.calls_auto_setup_after_call
         needsDialerRole -> R.string.calls_auto_choose_dialer
-        needsSetup -> R.string.calls_auto_open_setup
+        !setupComplete -> R.string.calls_auto_open_setup
         else -> null
     }
     GroupCard {
@@ -526,8 +526,8 @@ private fun CallReceivePage(
                     when {
                         !checked -> onToggle(false)
                         needsDialerRole -> onRequestDialer()
-                        needsSetup -> onSetup()
-                        else -> onToggle(true)
+                        setupComplete -> onToggle(true)
+                        else -> onSetup()
                     }
                 }.padding(horizontal = 16.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
