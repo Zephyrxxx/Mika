@@ -6,13 +6,18 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      revision:
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 # 同一个 PR 推新提交时取消上一次还没跑完的，main 上的推送各自跑完。
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ inputs.revision || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -22,6 +27,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -49,6 +57,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -62,6 +73,8 @@ jobs:
       # cliTest 先跑 cliContractTest（经真实子进程调 Python CLI），再跑 tools/mika/tests 下的 unittest。
       - name: CLI tests
         run: ./gradlew :core:cliTest -PmikaPython=python3 --stacktrace
+      - name: Custom maintenance regression tests
+        run: python3 -m unittest discover -s .github/scripts -p "test_*.py" -v
       - name: Translation tool tests
         run: python3 -m unittest discover -s tools/i18n -v
       - name: Translation resource checks
@@ -85,6 +98,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -117,6 +133,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-java@v6
         with:
           distribution: temurin

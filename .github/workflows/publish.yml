@@ -1,0 +1,117 @@
+name: Publish Mika Custom
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  workflow_call:
+    inputs:
+      revision: {type: string, required: true}
+permissions: {}
+concurrency:
+  group: mika-custom-release
+  cancel-in-progress: false
+jobs:
+  select:
+    if: github.repository == 'Zephyrxxx/Mika' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: {contents: read}
+    outputs:
+      sha: ${{ steps.select.outputs.sha }}
+      build: ${{ steps.select.outputs.build }}
+      needed: ${{ steps.select.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v7
+        with: {ref: '${{ inputs.revision || github.sha }}', fetch-depth: 0, persist-credentials: false}
+      - id: select
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -eu
+          sha=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$sha" origin/main
+          build=$(git rev-list --first-parent --count "$sha")
+          tag=v1.0.$build
+          printf 'sha=%s\nbuild=%s\n' "$sha" "$build" >> "$GITHUB_OUTPUT"
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            test "$(git rev-parse "$tag^{commit}")" = "$sha"
+            if gh release view "$tag" --json isDraft --jq .isDraft | grep -qx false; then exit 0; fi
+          fi
+          echo needed=true >> "$GITHUB_OUTPUT"
+  verify:
+    needs: select
+    if: needs.select.outputs.needed == 'true'
+    permissions: {contents: read}
+    uses: ./.github/workflows/ci.yml
+    with: {revision: '${{ needs.select.outputs.sha }}'}
+  build:
+    needs: [select, verify]
+    runs-on: ubuntu-latest
+    permissions: {contents: read}
+    steps:
+      - uses: actions/checkout@v7
+        with: {ref: '${{ needs.select.outputs.sha }}', persist-credentials: false}
+      - uses: actions/setup-java@v6
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v4
+        with: {packages: 'platform-tools platforms;android-36 build-tools;35.0.0'}
+      - uses: gradle/actions/setup-gradle@v6
+        with: {cache-provider: basic}
+      - env: {BUILD: '${{ needs.select.outputs.build }}'}
+        run: ./gradlew :app:assembleRelease -PcustomBuild="$BUILD"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-custom-${{ needs.select.outputs.sha }}
+          path: app/build/outputs/apk/release/*-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 3
+  publish:
+    needs: [select, build]
+    runs-on: ubuntu-latest
+    environment: mika-release
+    permissions: {contents: write}
+    steps:
+      - uses: actions/download-artifact@v7
+        with: {name: 'unsigned-custom-${{ needs.select.outputs.sha }}', path: unsigned}
+      - name: Sign and verify both APKs
+        env:
+          KEYSTORE: ${{ secrets.MIKA_KEYSTORE_B64 }}
+          STORE_PASS: ${{ secrets.MIKA_KEYSTORE_PASSWORD }}
+          BUILD: ${{ needs.select.outputs.build }}
+        run: |
+          set -euo pipefail
+          umask 077
+          ks="$RUNNER_TEMP/private.p12"
+          trap 'rm -f "$ks"' EXIT
+          printf '%s' "$KEYSTORE" | base64 --decode > "$ks"
+          unset KEYSTORE
+          bt="$ANDROID_HOME/build-tools/35.0.0"
+          mkdir dist
+          for abi in universal arm64-v8a; do
+            file="dist/Mika-v1.0.$BUILD.apk"
+            [[ "$abi" == universal ]] || file="dist/Mika-v1.0.$BUILD-arm64.apk"
+            "$bt/apksigner" sign --ks "$ks" --ks-key-alias phonecompat --ks-pass env:STORE_PASS --v4-signing-enabled false --out "$file" "unsigned/app-$abi-release-unsigned.apk"
+            "$bt/apksigner" verify --verbose --print-certs "$file" > "$RUNNER_TEMP/verify"
+            grep -Fx 'Signer #1 certificate SHA-256 digest: 911fdd3e3f92446e630bf329ee171675bcf6dd31d59f3cf2a43312748fa1d531' "$RUNNER_TEMP/verify"
+            "$bt/aapt" dump badging "$file" > "$RUNNER_TEMP/badging"
+            grep -F "package: name='com.wangzan101.mika.phonecompat' versionCode='$((100000+BUILD))' versionName='1.0.$BUILD'" "$RUNNER_TEMP/badging"
+            ! grep -qx 'application-debuggable' "$RUNNER_TEMP/badging" || exit 1
+            if [[ "$abi" == arm64-v8a ]]; then grep -Fx "native-code: 'arm64-v8a'" "$RUNNER_TEMP/badging"; fi
+          done
+          (cd dist && sha256sum *.apk > SHA256SUMS)
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.select.outputs.sha }}
+          BUILD: ${{ needs.select.outputs.build }}
+        run: |
+          set -eu
+          tag=v1.0.$BUILD
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$SHA" --draft --generate-notes --title "Mika Custom $tag"
+          fi
+          test "$(gh release view "$tag" --json isDraft --jq .isDraft)" = true
+          gh release upload "$tag" dist/* --clobber
+          # A stale run may publish historical assets but must not displace a newer main build.
+          latest=false
+          if [[ $(gh api "repos/$GH_REPO/commits/main" --jq .sha) == "$SHA" ]]; then latest=true; fi
+          gh release edit "$tag" --draft=false --latest="$latest"

@@ -1,0 +1,31 @@
+name: Push sync candidate
+on:
+  workflow_call:
+    inputs:
+      head: {type: string, required: true}
+      iteration: {type: number, required: true}
+    outputs:
+      sha: {value: '${{ jobs.push.outputs.sha }}'}
+permissions: {contents: write}
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    outputs: {sha: '${{ steps.push.outputs.sha }}'}
+    steps:
+      - uses: actions/checkout@v7
+        with: {ref: '${{ inputs.head }}', fetch-depth: 0}
+      - uses: actions/download-artifact@v7
+        with: {name: 'sync-${{ inputs.iteration }}-${{ github.run_attempt }}', path: '${{ runner.temp }}/reviewed'}
+      - id: push
+        env: {OLD: '${{ inputs.head }}'}
+        run: |
+          set -eu
+          git fetch "$RUNNER_TEMP/reviewed/candidate.bundle" refs/heads/reviewed
+          new=$(git rev-parse FETCH_HEAD)
+          git merge-base --is-ancestor "$OLD" "$new"
+          git fetch origin main codex/sync-upstream
+          test "$(git rev-parse origin/codex/sync-upstream)" = "$OLD"
+          # Privileged workflows and the code which controls the checks require a separate reviewed change.
+          git diff --exit-code origin/main "$new" -- .github/workflows .github/codex .github/scripts
+          git push origin "$new:refs/heads/codex/sync-upstream"
+          echo "sha=$new" >> "$GITHUB_OUTPUT"

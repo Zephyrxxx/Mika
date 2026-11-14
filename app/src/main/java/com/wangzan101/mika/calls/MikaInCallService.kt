@@ -9,12 +9,18 @@ import android.util.Log
 import com.wangzan101.mika.BuildConfig
 import com.wangzan101.mika.MikaApp
 
-/** Non-UI companion service; the user's dialer owns the native call screens and ring tone. */
+/** In-call UI for the explicitly selected default dialer. The platform provides ringing. */
 class MikaInCallService : InCallService() {
     private val runtime get() = (application as MikaApp).calls
     private val callback = object : Call.Callback() {
-        override fun onStateChanged(call: Call, state: Int) = runtime.onCallChanged(this@MikaInCallService, call)
-        override fun onDetailsChanged(call: Call, details: Call.Details) = runtime.onCallChanged(this@MikaInCallService, call)
+        override fun onStateChanged(call: Call, state: Int) {
+            runtime.onCallChanged(this@MikaInCallService, call)
+            RoleDialerUi.update(this@MikaInCallService)
+        }
+        override fun onDetailsChanged(call: Call, details: Call.Details) {
+            runtime.onCallChanged(this@MikaInCallService, call)
+            RoleDialerUi.update(this@MikaInCallService)
+        }
     }
     private val attached = mutableSetOf<Call>()
     private val muteState = TelecomMuteState(Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -36,6 +42,7 @@ class MikaInCallService : InCallService() {
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onCallAudioStateChanged(audioState: CallAudioState) {
         reportMute(TelecomMuteState.Source.LEGACY_AUDIO, audioState.isMuted)
+        if (attached.isNotEmpty()) RoleDialerUi.update(this)
     }
 
     override fun onMuteStateChanged(isMuted: Boolean) {
@@ -64,14 +71,22 @@ class MikaInCallService : InCallService() {
         super.onCallAdded(call)
         attached.add(call)
         call.registerCallback(callback)
+        RoleDialerUi.calls.add(call)
+        RoleDialerUi.update(this, bringToFront = true)
         runtime.onCallAdded(this, call)
     }
 
     override fun onCallRemoved(call: Call) {
         call.unregisterCallback(callback)
         attached.remove(call)
+        RoleDialerUi.calls.remove(call)
+        RoleDialerUi.update(this)
         runtime.onCallRemoved(this, call)
         super.onCallRemoved(call)
+    }
+
+    override fun onBringToForeground(showDialpad: Boolean) {
+        if (attached.isNotEmpty()) startActivity(Intent(this, DialerCallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
@@ -85,6 +100,7 @@ class MikaInCallService : InCallService() {
     }
 
     private fun clearCalls() {
+        RoleDialerUi.clear(this)
         val removing = attached.toList()
         attached.clear()
         muteState.reset()
