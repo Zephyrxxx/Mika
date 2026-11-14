@@ -508,8 +508,7 @@ private fun CallReceivePage(
         }
     }
     val autoLabel = stringResource(R.string.calls_auto_answer)
-    val canTurnOn = ready && config.audioVerified && state.phase == CallPhase.IDLE &&
-        (config.allowAllIncoming || config.allowedIncomingNumbers.isNotEmpty())
+    val canTurnOn = ready && !state.systemPhone && config.audioVerified && state.phase == CallPhase.IDLE
     GroupCard {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),

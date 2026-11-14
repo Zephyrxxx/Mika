@@ -1,0 +1,133 @@
+name: Upstream sync
+on:
+  schedule:
+    - cron: '30 16 * * *'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: mika-maintenance
+  cancel-in-progress: false
+jobs:
+  plan:
+    if: github.repository == 'Zephyrxxx/Mika' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.MIKA_SYNC_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    permissions: {contents: write, pull-requests: write, actions: read}
+    outputs:
+      work: ${{ steps.plan.outputs.work }}
+      head: ${{ steps.plan.outputs.head }}
+      base: ${{ steps.plan.outputs.base }}
+      upstream: ${{ steps.plan.outputs.upstream }}
+      pr: ${{ steps.plan.outputs.pr }}
+    steps:
+      - uses: actions/checkout@v7
+        with: {fetch-depth: 0}
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=codex/sync-upstream
+          base=$(git rev-parse origin/main)
+          git remote add upstream https://github.com/wangzan101/Mika.git
+          git fetch --no-tags upstream main
+          up=$(git rev-parse upstream/main)
+          pr=$(gh pr list --state open --head "$branch" --base main --json number,isCrossRepository --jq '[.[]|select(.isCrossRepository==false)][0].number // empty')
+          if [[ -z "$pr" ]] && git merge-base --is-ancestor "$up" "$base"; then exit 0; fi
+          if [[ -z "$pr" ]]; then
+            git switch -c "$branch" "$base"
+            git config user.name 'Mika sync'
+            git config user.email 'mika-sync@users.noreply.github.com'
+            echo "$up" > .github/sync-target
+            git add .github/sync-target
+            git commit -m "Track upstream synchronization"
+            # A branch left by an interrupted run can be resumed, never force-pushed.
+            if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+              git switch --detach "origin/$branch"
+            else
+              git push origin "HEAD:refs/heads/$branch"
+            fi
+            url=$(gh pr create --base main --head "$branch" --title 'Sync upstream Mika' --body 'Managed synchronization. Validation runs on the exact proposed commit.')
+            pr=${url##*/}
+          else
+            git switch --detach "origin/$branch"
+          fi
+          printf 'work=true\nhead=%s\nbase=%s\nupstream=%s\npr=%s\n' "$(git rev-parse HEAD)" "$base" "$up" "$pr" >> "$GITHUB_OUTPUT"
+  candidate:
+    needs: plan
+    if: needs.plan.outputs.work == 'true'
+    uses: ./.github/workflows/sync-candidate.yml
+    permissions: {contents: read, actions: read}
+    with:
+      head: ${{ needs.plan.outputs.head }}
+      base: ${{ needs.plan.outputs.base }}
+      upstream: ${{ needs.plan.outputs.upstream }}
+      iteration: 1
+    secrets: {api_key: '${{ secrets.OPENAI_API_KEY }}'}
+  push:
+    needs: [plan, candidate]
+    uses: ./.github/workflows/sync-push.yml
+    permissions: {contents: write}
+    with: {head: '${{ needs.plan.outputs.head }}', iteration: 1}
+  validate:
+    needs: push
+    uses: ./.github/workflows/ci.yml
+    permissions: {contents: read}
+    with: {revision: '${{ needs.push.outputs.sha }}'}
+  repair:
+    if: always() && needs.validate.result == 'failure' && needs.push.result == 'success'
+    needs: [plan, push, validate]
+    uses: ./.github/workflows/sync-candidate.yml
+    permissions: {contents: read, actions: read}
+    with:
+      head: ${{ needs.push.outputs.sha }}
+      base: ${{ needs.plan.outputs.base }}
+      upstream: ${{ needs.plan.outputs.upstream }}
+      iteration: 2
+    secrets: {api_key: '${{ secrets.OPENAI_API_KEY }}'}
+  repush:
+    needs: [push, repair]
+    uses: ./.github/workflows/sync-push.yml
+    permissions: {contents: write}
+    with: {head: '${{ needs.push.outputs.sha }}', iteration: 2}
+  retest:
+    needs: repush
+    uses: ./.github/workflows/ci.yml
+    permissions: {contents: read}
+    with: {revision: '${{ needs.repush.outputs.sha }}'}
+  merge:
+    needs: [plan, push, validate, repush, retest]
+    if: always() && (needs.validate.result == 'success' || needs.retest.result == 'success')
+    runs-on: ubuntu-latest
+    permissions: {contents: write, pull-requests: write}
+    outputs: {sha: '${{ steps.merge.outputs.sha }}'}
+    steps:
+      - id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.repush.outputs.sha || needs.push.outputs.sha }}
+          BASE: ${{ needs.plan.outputs.base }}
+          PR: ${{ needs.plan.outputs.pr }}
+        run: |
+          set -eu
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" = "$BASE"
+          gh pr merge "$PR" --merge --match-head-commit "$SHA" --delete-branch
+          test "$(gh pr view "$PR" --json state --jq .state)" = MERGED
+          echo "sha=$(gh pr view "$PR" --json mergeCommit --jq .mergeCommit.oid)" >> "$GITHUB_OUTPUT"
+  publish:
+    needs: merge
+    uses: ./.github/workflows/publish.yml
+    permissions: {contents: write}
+    with: {revision: '${{ needs.merge.outputs.sha }}'}
+  report:
+    needs: [plan, candidate, push, validate, repair, repush, retest, merge, publish]
+    if: always() && needs.plan.outputs.pr != '' && needs.merge.result != 'success'
+    runs-on: ubuntu-latest
+    permissions: {pull-requests: write}
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ needs.plan.outputs.pr }}
+        run: gh pr comment "$PR" --body "Sync was retained for retry. Job results and failure details are in https://github.com/$GH_REPO/actions/runs/$GITHUB_RUN_ID."

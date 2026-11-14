@@ -143,6 +143,7 @@ internal fun CallTaskScreen(
                 stringResource(R.string.calls_task_sim_override_summary, sim.label, preferred.label)
             sim != null -> sim.label
             config.defaultOutgoingSimId != null && draft.simOverride == null -> stringResource(R.string.calls_sim_unavailable)
+            state.systemPhone && draft.simOverride == null && config.defaultOutgoingSimId == null -> "系统选择 SIM"
             else -> missingSim
         }
         ListRow(MikaIcons.Phone, stringResource(R.string.calls_sim), simSummary,
@@ -194,7 +195,7 @@ internal fun CallTaskScreen(
         stringResource(R.string.calls_task_review), editable && number != null && brief != null,
         {
             if (number != null && brief != null) {
-                review = CallTaskSubmission(number, sim?.id, sim?.label ?: missingSim, voiceProfile.name, brief)
+                review = CallTaskSubmission(number, sim?.id, sim?.label ?: if (state.systemPhone && draft.simOverride == null && config.defaultOutgoingSimId == null) "系统选择 SIM" else missingSim, voiceProfile.name, brief)
             }
         },
         Modifier.testTag("call-task-review"),
@@ -207,9 +208,10 @@ internal fun CallTaskScreen(
         onChoose = { draft.simOverride = it; showSims = false }, onDismiss = { showSims = false },
     )
     review?.let { submission ->
-        val allowed = ready && canDial && state.simOptions.any { it.id == submission.simId }
+        val allowed = ready && canDial && (state.simOptions.any { it.id == submission.simId } ||
+            state.systemPhone && submission.simId == null && draft.simOverride == null && config.defaultOutgoingSimId == null)
         CallTaskReviewDialog(
-            submission, allowed,
+            submission, allowed, allowLocked = !state.systemPhone,
             onDismiss = { review = null },
             onDial = { locked ->
                 if (allowed) {
@@ -265,7 +267,7 @@ private fun CallTaskSimDialog(
 }
 
 @Composable
-private fun CallTaskReviewDialog(submission: CallTaskSubmission, canDial: Boolean, onDismiss: () -> Unit, onDial: (Boolean) -> Unit) {
+private fun CallTaskReviewDialog(submission: CallTaskSubmission, canDial: Boolean, allowLocked: Boolean, onDismiss: () -> Unit, onDial: (Boolean) -> Unit) {
     var locked by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -284,7 +286,7 @@ private fun CallTaskReviewDialog(submission: CallTaskSubmission, canDial: Boolea
                 }
                 if (submission.brief.context.isNotBlank()) TaskReviewField(stringResource(R.string.calls_task_context), submission.brief.context)
                 if (submission.brief.constraints.isNotBlank()) TaskReviewField(stringResource(R.string.calls_task_constraints), submission.brief.constraints)
-                if (canDial) {
+                if (canDial && allowLocked) {
                     for (mode in listOf(false, true)) {
                         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
                             .testTag(if (mode) "call-mode-lock" else "call-mode-now")

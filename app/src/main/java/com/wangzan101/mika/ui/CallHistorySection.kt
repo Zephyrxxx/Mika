@@ -86,7 +86,7 @@ internal fun CallHistorySection(
                 HistoryFilter.OPEN -> !record.handled
                 HistoryFilter.DONE -> record.handled
             }
-            val direction = if (record.direction == CallDirection.INCOMING) incoming else outgoing
+            val direction = when (record.direction) { CallDirection.INCOMING -> incoming; CallDirection.OUTGOING -> outgoing; null -> "系统通话" }
             matchesFilter && (text.isEmpty() || record.number.orEmpty().contains(text, ignoreCase = true) ||
                 (digits != null && record.number.orEmpty().filter(Char::isDigit).contains(digits)) ||
                 direction.contains(text, ignoreCase = true) || record.result.contains(text, ignoreCase = true) ||
@@ -246,7 +246,7 @@ private fun CallHistoryItem(
     val formatter = remember(locale) { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT, locale) }
     val start = remember(record.startedAtMs, formatter) { formatter.format(Date(record.startedAtMs)) }
     val end = remember(record.endedAtMs, formatter) { formatter.format(Date(record.endedAtMs)) }
-    val direction = directionLabel(record.direction)
+    val direction = record.direction?.let { directionLabel(it) } ?: "系统通话"
     val status = stringResource(if (record.handled) R.string.calls_history_done else R.string.calls_history_open)
     val name = record.number?.let { "\u2066$it\u2069" } ?: stringResource(R.string.calls_unknown_number)
     val expansion = stringResource(if (expanded) R.string.calls_collapse else R.string.calls_transcript)
@@ -261,6 +261,11 @@ private fun CallHistoryItem(
                 HorizontalDivider()
                 Text(stringResource(R.string.calls_history_period, start, end),
                     style = MaterialTheme.typography.bodySmall, color = MikaTheme.colors.ink3)
+                record.intervals.forEach { part ->
+                    val seconds = (part.endMs - part.startMs).coerceAtLeast(0) / 1000
+                    val owner = if (part.ai) "AI 托管" else "人工通话"
+                    Text("$owner  ·  ${seconds / 60}分${seconds % 60}秒", style = MaterialTheme.typography.bodyMedium)
+                }
                 record.summary?.let { summary ->
                     summary.purpose?.let { Text("${stringResource(R.string.calls_summary_purpose)}：$it") }
                     if (summary.highlights.isNotEmpty()) {

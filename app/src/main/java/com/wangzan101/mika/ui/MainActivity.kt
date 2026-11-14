@@ -735,7 +735,8 @@ private fun MikaRoot(
             app.chat.openConversation(it)
             nav.reset()
         })
-        Route.Calls -> CallSettingsScreen(app.calls, onBack = back, standalone = true, initialHistoryCallId = focusedCallHistoryId)
+        Route.Calls -> CallSettingsScreen(app.calls, onBack = back, standalone = true, initialHistoryCallId = focusedCallHistoryId,
+            onHelperSetup = { setupRepair = false; nav.push(Route.PhoneSetup) })
     }
 }
 
