@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="calls_stock_ring_title">پاسخ با دکمهٔ شناور هوش مصنوعی</string>
+    <string name="calls_stock_ring_permission">برای اجازهٔ پاسخ‌گویی با برنامهٔ تلفن سیستم اینجا بزنید.</string>
+    <string name="calls_stock_ring_hint">هنگام زنگ خوردن گوشی، دکمهٔ پاسخ را در نوار شناور بزنید.</string>
     <string name="calls_auto_setup_after_call">پس از پایان این تماس می‌توانید پاسخ خودکار را فعال کنید.</string>
     <string name="calls_auto_choose_dialer">برای پاسخ خودکار، اینجا بزنید و Mika را به‌عنوان برنامهٔ پیش‌فرض تلفن انتخاب کنید.</string>
     <string name="calls_auto_open_setup">برای تکمیل تنظیمات تماس هوش مصنوعی و بررسی صدای تماس اینجا بزنید.</string>

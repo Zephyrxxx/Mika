@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="calls_stock_ring_title">来电悬浮接听</string>
+    <string name="calls_stock_ring_permission">点这里允许 Mika 接听来电，继续使用系统电话。</string>
+    <string name="calls_stock_ring_hint">来电响铃时点悬浮栏上的「AI 接听」。</string>
     <string name="calls_auto_setup_after_call">本次通话结束后可开启自动接听。</string>
     <string name="calls_auto_choose_dialer">自动接听需要 Mika 作为默认电话。点这里选择。</string>
     <string name="calls_auto_open_setup">点这里完成 AI 电话设置和通话声音验证。</string>

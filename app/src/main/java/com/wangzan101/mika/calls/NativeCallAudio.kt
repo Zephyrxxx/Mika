@@ -24,8 +24,7 @@ internal class NativeCallAudio(private val app: MikaApp) {
         val credentials = withContext(Dispatchers.IO) { runtime.voiceProfiles.credentials(profile.id) }
         checkNotNull(credentials) { "请配置实时语音凭据" }
         val rules = withContext(Dispatchers.IO) { runtime.instructions.promptSnapshot() }
-        val prompt = CallPolicy.prompt(config.systemPrompt, log.direction ?: CallDirection.INCOMING, rules, task = log.dial?.task) +
-            " 当前是机主在已接通电话中手动邀请你加入；通话可能由任一方拨出。"
+        val prompt = CallPolicy.prompt(config.systemPrompt, log.direction, rules, task = log.dial?.task)
         val mode = if (config.audioMode == CallAudioMode.DIRECT) 1 else 2
         val owner = Binder()
         var session: CallRealtimeSession? = null

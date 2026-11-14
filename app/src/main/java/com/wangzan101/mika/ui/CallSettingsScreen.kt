@@ -254,6 +254,7 @@ private fun CallSettingsWorkspace(
                             canStartStandby = canStartStandby,
                             standbyNeedsSetup = ready && !device.readiness.standbyNotificationsAllowed,
                             needsDialerRole = device.needsDialerRole, onRequestDialer = device.requestDialerRole,
+                            stockDevice = device.takeIf { it.stockDialer },
                             onSetup = ::openDeviceSettings,
                             onToggle = { checked ->
                                 scope.launch {
@@ -495,6 +496,7 @@ private fun CallReceivePage(
     config: CallConfig, state: CallRuntimeState, ready: Boolean, controlsEnabled: Boolean,
     canStartStandby: Boolean, standbyNeedsSetup: Boolean,
     needsDialerRole: Boolean, onRequestDialer: () -> Unit,
+    stockDevice: CallDeviceControls?,
     onSetup: () -> Unit, onToggle: (Boolean) -> Unit, onRules: () -> Unit, onBypass: () -> Unit,
     onPause: (Int) -> Unit, onResume: () -> Unit, onInstructions: () -> Unit, onStartStandby: () -> Unit,
 ) {
@@ -509,6 +511,18 @@ private fun CallReceivePage(
         }
     }
     val autoLabel = stringResource(R.string.calls_auto_answer)
+    if (stockDevice != null) {
+        GroupCard {
+            ListRow(MikaIcons.Phone, stringResource(R.string.calls_stock_ring_title),
+                stringResource(when {
+                    !stockDevice.canAnswerRinging -> R.string.calls_stock_ring_permission
+                    !ready -> R.string.calls_auto_open_setup
+                    else -> R.string.calls_stock_ring_hint
+                }), first = true, onClick = if (stockDevice.canAnswerRinging) onSetup else stockDevice.allowAnswerRinging) {
+                RowChevron()
+            }
+        }
+    }
     val idle = state.phase == CallPhase.IDLE
     val enabled = controlsEnabled && (config.autoAnswer || idle)
     val setupComplete = ready && !state.systemPhone && config.audioVerified

@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="calls_stock_ring_title">Responder con el botón flotante de IA</string>
+    <string name="calls_stock_ring_permission">Toca para permitir que Mika responda con la aplicación Teléfono del sistema.</string>
+    <string name="calls_stock_ring_hint">Cuando suene el teléfono, toca el botón de respuesta en la barra flotante.</string>
     <string name="calls_auto_setup_after_call">Podrás activar la respuesta automática cuando termine esta llamada.</string>
     <string name="calls_auto_choose_dialer">Toca para elegir Mika como aplicación de teléfono predeterminada para la respuesta automática.</string>
     <string name="calls_auto_open_setup">Toca para terminar de configurar las llamadas con IA y comprobar el audio.</string>
