@@ -2,10 +2,15 @@ package com.wangzan101.mika.ui
 
 import com.wangzan101.mika.R
 import com.wangzan101.mika.i18n.tr
+import com.wangzan101.mika.i18n.trPlural
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import com.wangzan101.mika.settings.ProviderConnection
 import android.app.ActivityManager
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
 import com.wangzan101.mika.ui.components.MikaDialog
@@ -42,6 +47,7 @@ import com.wangzan101.mika.settings.FeatureFlags
 import com.wangzan101.mika.settings.Prerequisites
 import com.wangzan101.mika.settings.Problem
 import com.wangzan101.mika.settings.ProviderStore
+import com.wangzan101.mika.voice.WakeWordService
 import com.wangzan101.mika.settings.NetProxyStore
 import com.wangzan101.mika.settings.WebSearchConfig
 import com.wangzan101.mika.settings.WebSearchSettings
@@ -72,7 +78,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** 设置里能进入的子页面;[Home] 是设置首页,[Advanced] 集中放置连接、维护和工程能力。 */
-private enum class SettingsPage { Home, Advanced, AppAccess, SmsLogin, PhoneOps, Calls, Wechat, DuringWork, Capsule, Language, Notifications, Recommendations, Sandbox, Recovery, SelfCheck, ComputerAccess, McpServers, Root, Developer, DeviceDirectories, RunStats, Proactive }
+private enum class SettingsPage { Home, Advanced, AppAccess, SmsLogin, PhoneOps, Calls, Wechat, DuringWork, Capsule, Language, Notifications, Recommendations, Sandbox, Plugins, Recovery, SelfCheck, ComputerAccess, McpServers, Root, Developer, DeviceDirectories, RunStats, Proactive }
 
 /**
  * 设置页:总状态卡 + 常用 / 我的数据 / 其他。高级与其他只增加一层,各子页返回来时的页面。
@@ -117,10 +123,22 @@ fun SettingsScreen(
     LaunchedEffect(Unit) { root.refresh() }
     val wechat = remember { (context.applicationContext as com.wangzan101.mika.MikaApp).wechat }
     val wechatState by wechat.state.collectAsState()
+    val wakeActive by WakeWordService.active.collectAsState()
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) WakeWordService.start(context)
+    }
+    val toggleWake: () -> Unit = {
+        if (wakeActive) WakeWordService.stop(context)
+        else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+            WakeWordService.start(context)
+        else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        Unit
+    }
     val flags = remember { FeatureFlags.get(context) }
     var personalStart by remember { mutableStateOf(flags.personalStart()) }
     var parallelMax by remember { mutableIntStateOf(flags.parallelMax()) }
     var keepScreenOn by remember { mutableStateOf(flags.keepScreenOn()) }
+    var showTaskCost by remember { mutableStateOf(flags.showTaskCost()) }
     var muteTarget by remember { mutableStateOf(flags.muteTarget()) }
     var operatingPace by remember { mutableStateOf(flags.operatingPace()) }
     var stepLimit by remember { mutableStateOf(flags.taskStepLimit()) }
@@ -158,6 +176,8 @@ fun SettingsScreen(
     val mcpNetworkOn by mcp.settings.enabled.collectAsState()
     val mcpUsbOn by mcp.usb.enabled.collectAsState()
     val mcpOn = mcpNetworkOn || mcpUsbOn
+    val pluginRegistry = remember { (context.applicationContext as com.wangzan101.mika.MikaApp).plugins }
+    val pluginRecords by pluginRegistry.plugins.collectAsState()
     val parallel = if (!speed.parallelTasks) null else ParallelSetting(
         parallelMax,
         ParallelCapability.detect(
@@ -200,6 +220,7 @@ fun SettingsScreen(
             onOpenAppAccess = { page = SettingsPage.AppAccess },
             onOpenSmsLogin = { page = SettingsPage.SmsLogin },
             onOpenDuringWork = { page = SettingsPage.DuringWork },
+            wakeActive = wakeActive, onWakeToggle = toggleWake,
             capsuleMode = capsuleMode, onOpenCapsule = { page = SettingsPage.Capsule },
             onOpenNotifications = { page = SettingsPage.Notifications },
             language = language, onOpenLanguage = { page = SettingsPage.Language },
@@ -216,6 +237,7 @@ fun SettingsScreen(
             proxy = proxy, proxyNote = proxy?.let { NetProxyCopy.subtitle(it, browserProxy) }, onOpenProxy = { editingProxy = true },
             webSearch = webSearch, onOpenWebSearch = { editingSearch = true },
             sandbox = sandboxStatus, onOpenSandbox = { page = SettingsPage.Sandbox },
+            pluginsCount = pluginRecords.size, onOpenPlugins = { page = SettingsPage.Plugins },
             showRecovery = status.sdkInt >= Prerequisites.MIN_SDK, onOpenRecovery = { page = SettingsPage.Recovery },
             computerAccess = mcpOn, onOpenComputerAccess = { page = SettingsPage.ComputerAccess },
             mcpServersCount = mcpServers?.servers?.value?.size, onOpenMcpServers = { page = SettingsPage.McpServers },
@@ -242,6 +264,7 @@ fun SettingsScreen(
             operatingPace = operatingPace, onOperatingPace = { flags.setOperatingPace(it); operatingPace = it },
             stepLimit = stepLimit, onStepLimit = { flags.setTaskStepLimit(it); stepLimit = it },
             tokenBudget = tokenBudget, onTokenBudget = { flags.setTaskTokenBudget(it); tokenBudget = it },
+            showTaskCost = showTaskCost, onShowTaskCost = { flags.setShowTaskCost(it); showTaskCost = it },
             selfConfig = selfConfig, onSelfConfig = { flags.setSelfConfig(it); selfConfig = it },
             selfOperate = selfOperate, onSelfOperate = { flags.setSelfOperate(it); selfOperate = it },
             pipOperate = pipOperate, onPipOperate = { flags.setPipOperate(it); pipOperate = it },
@@ -259,6 +282,7 @@ fun SettingsScreen(
             cardScale = capsuleCardScale,
             onCardScale = { flags.setCapsuleCardScale(it); capsuleCardScale = it },
         )
+        SettingsPage.Plugins -> PluginsScreen(pluginRegistry, onBack = toHome)
         SettingsPage.Sandbox -> SandboxScreen(onBack = toAdvanced)
         SettingsPage.Recovery -> RecoveryScreen(onBack = toAdvanced, onOpenSelfCheck = { page = SettingsPage.SelfCheck })
         SettingsPage.SelfCheck -> SelfCheckScreen(status, onBack = back)
@@ -382,6 +406,8 @@ fun SettingsContent(
     onOpenAppAccess: () -> Unit = {},
     onOpenSmsLogin: () -> Unit = {},
     onOpenDuringWork: () -> Unit = {},
+    wakeActive: Boolean? = null,
+    onWakeToggle: () -> Unit = {},
     /** 悬浮胶囊此刻的选择,写在「悬浮胶囊」一行的右边。 */
     capsuleMode: CapsuleMode = CapsuleMode.DEFAULT,
     onOpenCapsule: () -> Unit = {},
@@ -422,6 +448,11 @@ fun SettingsContent(
             }
             ListRow(MikaIcons.Ripple, stringResource(R.string.proactive_title), stringResource(R.string.proactive_entry_sub), onClick = onOpenProactive) { RowChevron() }
             ListRow(MikaIcons.Moon, stringResource(R.string.settings_during_work), stringResource(R.string.settings_during_work_sub), onClick = onOpenDuringWork) { RowChevron() }
+            wakeActive?.let { on ->
+                ListRow(MikaIcons.Bell, stringResource(R.string.wake_settings_title), stringResource(R.string.wake_settings_subtitle), onClick = onWakeToggle) {
+                    RowValue(stringResource(if (on) R.string.wake_listening else R.string.wake_off))
+                }
+            }
             ListRow(MikaIcons.Message, CapsuleSettingsCopy.TITLE, CapsuleSettingsCopy.SUBTITLE, onClick = onOpenCapsule) {
                 RowValue(CapsuleSettingsCopy.label(capsuleMode))
                 RowChevron()
@@ -495,6 +526,8 @@ fun AdvancedSettingsContent(
     onOpenWebSearch: () -> Unit = {},
     sandbox: SandboxStatus? = null,
     onOpenSandbox: () -> Unit = {},
+    pluginsCount: Int? = null,
+    onOpenPlugins: () -> Unit = {},
     showRecovery: Boolean = true,
     onOpenRecovery: () -> Unit = {},
     computerAccess: Boolean? = null,
@@ -510,7 +543,7 @@ fun AdvancedSettingsContent(
 ) {
     PageScaffold(stringResource(R.string.settings_advanced), onBack) {
         val sandboxRow = sandbox?.takeIf { it !is SandboxStatus.Unsupported }
-        if (proxy != null || webSearch != null || sandboxRow != null || computerAccess != null || mcpServersCount != null || showRoot) {
+        if (proxy != null || webSearch != null || sandboxRow != null || pluginsCount != null || computerAccess != null || mcpServersCount != null || showRoot) {
             GroupLabel(stringResource(R.string.settings_connections))
             GroupCard {
                 var first = true
@@ -529,6 +562,11 @@ fun AdvancedSettingsContent(
                 if (sandboxRow != null) {
                     ListRow(MikaIcons.Terminal, stringResource(R.string.settings_sandbox), first = take(), onClick = onOpenSandbox) {
                         RowValue(sandboxValue(sandboxRow)); RowChevron()
+                    }
+                }
+                pluginsCount?.let {
+                    ListRow(MikaIcons.Spark, stringResource(R.string.plugins_title), first = take(), onClick = onOpenPlugins) {
+                        RowValue(trPlural(R.plurals.plugins_count, it)); RowChevron()
                     }
                 }
                 computerAccess?.let { on ->

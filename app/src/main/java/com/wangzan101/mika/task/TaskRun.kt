@@ -9,6 +9,8 @@ import com.wangzan101.mika.core.uistate.PlacePace
 import kotlin.random.Random
 import com.wangzan101.mika.core.action.OutwardPacing
 import com.wangzan101.mika.core.cap.phone.OperatingPace
+import com.wangzan101.mika.core.usage.DeepSeekPriceCache
+import com.wangzan101.mika.core.usage.DeepSeekRunCost
 import com.wangzan101.mika.core.usage.RunUsageTally
 import com.wangzan101.mika.core.shell.AccessibilityRepair
 import com.wangzan101.mika.core.shell.HelperRestart
@@ -158,6 +160,7 @@ internal fun restorePipSound(takeover: Takeover?, restorePhone: () -> Unit) {
 internal fun mutePipSound(takeover: Takeover?, mutePhone: () -> Unit) {
     if (takeover?.muteBack() != true) mutePhone()
 }
+private val deepSeekPrices by lazy { DeepSeekPriceCache(ProviderStore.modelHttp) }
 
 /**
  * 一个任务的全部状态:虚拟屏、循环、关卡、接管、静音、监视。[TaskService] 只管服务生命周期、意图分发与通知。
@@ -552,7 +555,8 @@ class TaskRun(
         var runStore: RunStore? = null
         // 整个运行共用一份已报告 Token 预算；子任务沿用协程上下文里的这份，不另开额度。
         val tokenBudget = if (conditionCheck) null else FeatureFlags.get(service).taskTokenBudget()
-        val tally = RunUsageTally(tokenBudget)
+        // 这次运行里经计量的模型请求(含旁路调用),收尾时记进运行记录
+        val tally = RunUsageTally(tokenBudget, if (FeatureFlags.get(service).showTaskCost()) DeepSeekRunCost() else null)
         // 第一次打开网址时才建;没建过就不用关
         var webStack: WebStack? = null
         // 当前界面(手机/网页)要看分发器;画中画的画面来源随它切换
@@ -579,6 +583,7 @@ class TaskRun(
             // 用户在浏览器页上对着一页问的:那一页借给这个任务当当前网页标签(见 PageLoans);开跑时页面还开着才借得到
             val pageLoan = if (provenance.origin == RunOrigin.Ui) withContext(Dispatchers.Main) { UserBrowser.existing()?.claim(conversationId, key) } else null
             val light = env.lightModelFactory(service, session)
+            val decision = env.decisionModel(service)
             // 同一模型分成两个实例并不会更便宜或更快;禁止它给批量/收尾工具反而只会增加改派和逐步操作。
             // 这只跳过逐步分工,轻量角色仍可用于意图判断、标题和收尾等辅助调用。
             val routedLight = light?.takeIf {
@@ -788,7 +793,11 @@ class TaskRun(
             // 用户本次说的话:记忆的引文、按用户要求写下技能的引文都据此核对(只在内存里,任务开始清空)
             val utterances = UserUtterances()
             // 改名前沉淀的个人技能:里面的旧工具名载入时换成现在的
-            val catalog = GuideCatalog.withPersonal(skills, memoryRuntime.skills(), legacyNames()::rewrite)
+            // 插件技能取任务开始时的快照:任务中途启停插件,下一次任务才生效
+            val catalog = GuideCatalog.withPersonal(
+                skills, memoryRuntime.skills(), legacyNames()::rewrite,
+                plugins = (service.application as MikaApp).plugins.skillsSnapshot(),
+            )
             // 内置浏览器:每个任务自己的后台网页显示、标签池和脚本引擎,第一次打开网址时才建(只用手机的任务不建);
             // 系统里没有 WebView 时不提供网页工具
             val webInstalled = runCatching { WebViewCompat.getCurrentWebViewPackage(service) != null }.getOrDefault(false)
@@ -1000,8 +1009,11 @@ class TaskRun(
                 modelFallbacks = chainModels, modelChainTags = chainTags,
                 router = routedLight?.let { ModelRouter(model, it) },
                 intentJudge = if (provenance.origin == RunOrigin.Ui) light ?: model else null,
+                intentDecision = if (provenance.origin == RunOrigin.Ui) decision else null,
                 // 选路线是辅助判断:用轻量模型,没配用主模型
-                routes = if (speed.replay) RouteMatcher(light ?: model, routeStore, knowledge) else null,
+                routes = if (speed.replay) RouteMatcher(light ?: model, routeStore, knowledge, decision) { detail ->
+                    sink.event(RunEvent.State(System.currentTimeMillis(), "jev_route", detail))
+                } else null,
                 skills = catalog,
                 memory = memory,
                 interaction = service.interaction(conversationId, channelPeer),
@@ -1155,7 +1167,15 @@ class TaskRun(
                     }
                     record?.let { r ->
                         apps?.let { r.event(RunEvent.State(System.currentTimeMillis(), "apps_after_task", it.detail)) }
-                        r.event(tally.event(System.currentTimeMillis()))
+                        val cost = tally.deepSeekCost?.let { usage ->
+                            val table = if (usage.hasUsage()) {
+                                withTimeoutOrNull(2_000L) { deepSeekPrices.prices() }.also {
+                                    if (it == null) Log.d(TAG, "DeepSeek 价目表暂不可用")
+                                }
+                            } else null
+                            usage.estimate(table)
+                        }
+                        r.event(tally.event(System.currentTimeMillis(), cost))
                         r.close()
                         if (BuildConfig.DEBUG) runStore?.mirrorToExternal(r.runId)
                     }
