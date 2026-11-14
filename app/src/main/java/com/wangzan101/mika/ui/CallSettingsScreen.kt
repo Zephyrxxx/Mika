@@ -20,7 +20,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -254,6 +253,7 @@ private fun CallSettingsWorkspace(
                             controlsEnabled = !settingsBusy && !controlBusy && (!busy || config.autoAnswer),
                             canStartStandby = canStartStandby,
                             standbyNeedsSetup = ready && !device.readiness.standbyNotificationsAllowed,
+                            needsDialerRole = device.needsDialerRole, onRequestDialer = device.requestDialerRole,
                             onSetup = ::openDeviceSettings,
                             onToggle = { checked ->
                                 scope.launch {
@@ -494,6 +494,7 @@ private fun LiveCallTranscript(callId: String?, lines: List<CallTranscriptLine>)
 private fun CallReceivePage(
     config: CallConfig, state: CallRuntimeState, ready: Boolean, controlsEnabled: Boolean,
     canStartStandby: Boolean, standbyNeedsSetup: Boolean,
+    needsDialerRole: Boolean, onRequestDialer: () -> Unit,
     onSetup: () -> Unit, onToggle: (Boolean) -> Unit, onRules: () -> Unit, onBypass: () -> Unit,
     onPause: (Int) -> Unit, onResume: () -> Unit, onInstructions: () -> Unit, onStartStandby: () -> Unit,
 ) {
@@ -508,10 +509,27 @@ private fun CallReceivePage(
         }
     }
     val autoLabel = stringResource(R.string.calls_auto_answer)
-    val canTurnOn = ready && !state.systemPhone && config.audioVerified && state.phase == CallPhase.IDLE
+    val idle = state.phase == CallPhase.IDLE
+    val enabled = controlsEnabled && (config.autoAnswer || idle)
+    val setupComplete = ready && !state.systemPhone && config.audioVerified
+    val hint = when {
+        config.autoAnswer -> null
+        !idle -> R.string.calls_auto_setup_after_call
+        needsDialerRole -> R.string.calls_auto_choose_dialer
+        !setupComplete -> R.string.calls_auto_open_setup
+        else -> null
+    }
     GroupCard {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            Modifier.fillMaxWidth().testTag("call-auto-answer")
+                .toggleable(config.autoAnswer, enabled = enabled, role = Role.Switch) { checked ->
+                    when {
+                        !checked -> onToggle(false)
+                        needsDialerRole -> onRequestDialer()
+                        setupComplete -> onToggle(true)
+                        else -> onSetup()
+                    }
+                }.padding(horizontal = 16.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
         ) {
             IconTile(MikaIcons.Bell, when (state.autoAnswerStage) {
@@ -521,13 +539,10 @@ private fun CallReceivePage(
             })
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(autoLabel, style = MaterialTheme.typography.titleMedium)
-                Text(autoAnswerSummary(config, state), style = MaterialTheme.typography.bodySmall, color = MikaTheme.colors.ink3)
+                Text(hint?.let { stringResource(it) } ?: autoAnswerSummary(config, state),
+                    style = MaterialTheme.typography.bodySmall, color = MikaTheme.colors.ink3)
             }
-            MikaSwitch(
-                config.autoAnswer, onToggle,
-                modifier = Modifier.testTag("call-auto-answer").semantics { contentDescription = autoLabel },
-                enabled = controlsEnabled && (config.autoAnswer || canTurnOn),
-            )
+            MikaSwitch(config.autoAnswer, onCheckedChange = null, enabled = enabled)
         }
         if (!ready || !config.audioVerified) {
             HorizontalDivider()

@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="calls_auto_setup_after_call">本次通話結束後即可開啟自動接聽。</string>
+    <string name="calls_auto_choose_dialer">自動接聽需要將 Mika 設為預設電話應用程式。點此選擇。</string>
+    <string name="calls_auto_open_setup">點此完成 AI 電話設定並驗證通話音訊。</string>
     <string name="calls_device_allow_notifications">允許通知</string>
     <string name="calls_device_allow_phone">允許電話權限</string>
     <string name="calls_device_helper">內建助手</string>
