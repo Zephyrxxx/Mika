@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="calls_auto_setup_after_call">Você pode ativar o atendimento automático quando esta chamada terminar.</string>
+    <string name="calls_auto_choose_dialer">Toque para escolher o Mika como aplicativo de telefone padrão para o atendimento automático.</string>
+    <string name="calls_auto_open_setup">Toque para concluir a configuração das chamadas com IA e verificar o áudio.</string>
     <string name="calls_device_allow_notifications">Autorizar notificações</string>
     <string name="calls_device_allow_phone">Autorizar permissões de telefone</string>
     <string name="calls_device_helper">Assistente integrado</string>
