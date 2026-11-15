@@ -43,6 +43,11 @@ sealed interface Origin {
     data class Model(override val step: Int) : Origin {
         override val policy get() = MODEL
     }
+    data class Decision(override val step: Int, val planned: Boolean = false, val stateToken: String? = null) : Origin {
+        // A planned actor uses the user's normal permissions, not a separate blanket denial policy.
+        override val policy get() = if (planned) MODEL.copy(source = "decision") else MODEL.copy(source = "decision", usesGrant = false,
+            judgeWithoutGate = true, refuseUnresolved = true, stopOnGuardWarning = true)
+    }
 
     /** do_steps 里的一步。 */
     data class Batch(override val step: Int) : Origin {

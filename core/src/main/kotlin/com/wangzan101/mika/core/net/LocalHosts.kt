@@ -33,6 +33,24 @@ object LocalHosts {
     private fun privateIpv4(a: Int, b: Int) =
         a == 127 || a == 10 || (a == 172 && b in 16..31) || (a == 192 && b == 168) || (a == 169 && b == 254)
 
+    /**
+     * 是不是本机、局域网,或组网工具常用的 CGNAT 网段 100.64/10。
+     * 比 [isLocal] 多认这一段,只用于用户显式允许本地 HTTP 后的地址范围判断。
+     * 地址本身不能证明正在使用 VPN 或已加密;运营商共享网络也使用这段地址。
+     * 明文 HTTP 可能暴露凭据与数据,调用方仍须要求用户确认可信网络或使用 HTTPS。
+     */
+    fun isPrivateOrMesh(host: String): Boolean {
+        if (isLocal(host)) return true
+        val h = normalize(host)
+        if (h.isEmpty()) return false
+        ipv4(h)?.let { (a, b) -> return a == 100 && b in 64..127 }
+        if (h.startsWith("::ffff:")) {
+            val (a, b) = ipv4(h.removePrefix("::ffff:")) ?: return false
+            return a == 100 && b in 64..127
+        }
+        return false
+    }
+
     /** 走网络代理时这个主机照旧直连。 */
     fun bypassesProxy(host: String): Boolean {
         if (isLocal(host)) return true

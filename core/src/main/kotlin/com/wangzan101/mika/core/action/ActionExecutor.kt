@@ -160,6 +160,9 @@ class ActionExecutor(
         dwelt.stop?.let { stop ->
             return ran(Step(call, args, origin, before, writing = false, offScreen, verb, null, followUp, reads, preset = stop, pacedMs = paced + dwelt.waitMs))
         }
+        // Check after waits/approvals/pacing, immediately before mutation. Covers coordinate gestures too.
+        if (origin is Origin.Decision && origin.stateToken != null && !tools.decisionCurrent(origin.stateToken))
+            return refuse("decision_screen_changed", origin, before)
         if (writing) {
             guards.noteAction()
             decision.noteWrite(call.name)

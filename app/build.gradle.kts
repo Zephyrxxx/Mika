@@ -98,6 +98,7 @@ kotlin {
 
 dependencies {
     implementation(files("libs/sherpa-onnx-2.0.1.aar"))
+    implementation("ai.typesafe.integration:mika-jev:0.1.0")
     implementation(project(":core"))
     implementation(libs.protobuf.lite)
     implementation(platform(libs.compose.bom))

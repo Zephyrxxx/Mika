@@ -436,6 +436,10 @@ class ToolDispatcher internal constructor(
 
     /** 主模型能看图时动作之后再看一眼:内容和画面是同一时刻的;什么都没打开时为 null。读到的记进账本。 */
     suspend fun lookNow(): Glance? = surfaces.viewNow()?.let { v -> Glance(v.content, v.image, v.imageId, remember(v.observations, surface)) }
+    suspend fun decisionView(): JsonObject? = surfaces.decisionView()
+    suspend fun operationView(surface: String, texts: Map<String, String> = emptyMap()): JsonObject? = surfaces.operationView(surface, texts)
+    suspend fun decisionCurrent(token: String): Boolean = surfaces.decisionCurrent(token)
+    fun decisionToken(surface: String, snapshotId: String): String? = surfaces.decisionToken(surface, snapshotId)
 
     /** 打开链接的工具此刻会不会放行这组参数(只看链接规则与参考资料,不执行)。 */
     fun linkAllowed(action: String?, uri: String?, pkg: String?): Boolean =

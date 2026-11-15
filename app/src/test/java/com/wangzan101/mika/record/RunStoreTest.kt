@@ -2,6 +2,7 @@ package com.wangzan101.mika.record
 
 import com.wangzan101.mika.core.record.RunEvent
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -72,6 +73,35 @@ class RunStoreTest {
         assertFalse(rows[0].containsKey("cachedTokens"))
         assertEquals(Json.parseToJsonElement("""{"type":"unreadable_event","line":2}"""), rows[1])
         assertEquals("compressed", rows[2].getValue("type").jsonPrimitive.content)
+    }
+
+    @Test fun exportsDecisionRouteWithoutTaskContentOrCallCounts() {
+        val s = store()
+        val id = s.open("private goal").also { it.close() }.runId
+        val detail = """{"step":11,"mode":"enabled","reason":"uncertain","planState":"recovering","source":"model","httpCalls":1,"objective":"private objective","apiKey":"private key"}"""
+        tmp.root.resolve("files/runs/$id/events.jsonl").writeText(RunEvent.encode(RunEvent.State(1, "decision_route", detail)) + "\n")
+        val exported = s.usageLog(id)
+        val row = Json.parseToJsonElement(exported.trim()).jsonObject
+        assertEquals("decision_route", row.getValue("type").jsonPrimitive.content)
+        assertEquals("recovering", row.getValue("planState").jsonPrimitive.content)
+        assertEquals(JsonPrimitive(11), row["step"])
+        assertFalse(row.containsKey("httpCalls")); assertFalse(exported.contains("private"))
+    }
+
+    @Test fun exportsDecisionUsageWithOnlyWhitelistedMetadata() {
+        val s = store()
+        val id = s.open("g").also { it.close() }.runId
+        val detail = """{"model":"jev-resolved","purpose":"intent","mode":"auxiliary","inputTokens":null,"outputTokens":null,"httpCalls":1,"status":"timeout","apiKey":"private-key","state":"private-screen"}"""
+        tmp.root.resolve("files/runs/$id/events.jsonl").writeText(
+            RunEvent.encode(RunEvent.State(1, "decision_usage", detail)) + "\n" +
+                RunEvent.encode(RunEvent.State(2, "other", "private-state")) + "\n")
+        val exported = s.usageLog(id)
+        val row = Json.parseToJsonElement(exported.trim()).jsonObject
+        assertEquals("decision_usage", row.getValue("type").jsonPrimitive.content)
+        assertEquals("jev-resolved", row.getValue("model").jsonPrimitive.content)
+        assertEquals(JsonNull, row["inputTokens"])
+        assertFalse(exported.contains("private"))
+        assertFalse(exported.contains("apiKey"))
     }
 
     @Test fun writesRunJsonEventsAndScreens() {
