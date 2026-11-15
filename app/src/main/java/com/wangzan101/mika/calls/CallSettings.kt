@@ -40,14 +40,15 @@ class CallSettings(
         require(speaker.length <= CallPolicy.MAX_SPEAKER_CHARS && speaker.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it in "_-" }) {
             "无效的火山音色编号"
         }
-        val audioVerified = config.audioVerified && config.audioMode == previous.audioMode
+        val compatibilityChanged = config.nativePhoneCompatibility != previous.nativePhoneCompatibility
+        val audioVerified = config.audioVerified && config.audioMode == previous.audioMode && !compatibilityChanged
         val next = config.copy(
             allowedIncomingNumbers = numbers,
             bypassIncomingNumbers = bypass,
             autoAnswerPausedUntilMs = config.autoAnswerPausedUntilMs?.takeIf { it > System.currentTimeMillis() },
             audioVerified = audioVerified,
-            autoAnswer = config.enabled && audioVerified && config.autoAnswer,
-            backgroundStandbyAuthorized = previous.backgroundStandbyAuthorized && config.enabled && audioVerified && config.autoAnswer,
+            autoAnswer = !config.nativePhoneCompatibility && config.enabled && audioVerified && config.autoAnswer,
+            backgroundStandbyAuthorized = !config.nativePhoneCompatibility && previous.backgroundStandbyAuthorized && config.enabled && audioVerified && config.autoAnswer,
             autoAnswerDelaySeconds = config.autoAnswerDelaySeconds.coerceIn(
                 CallConfig.MIN_AUTO_ANSWER_DELAY_SECONDS, CallConfig.MAX_AUTO_ANSWER_DELAY_SECONDS,
             ),
@@ -59,6 +60,7 @@ class CallSettings(
         )
         val committed = prefs.edit()
             .putBoolean("enabled", next.enabled)
+            .putBoolean("native_phone_compatibility", next.nativePhoneCompatibility)
             .putBoolean("summary_enabled", next.summaryEnabled)
             .putBoolean("auto_answer", next.autoAnswer)
             .putBoolean(BACKGROUND_AUTHORIZED, next.backgroundStandbyAuthorized)
@@ -86,7 +88,7 @@ class CallSettings(
     @Synchronized
     internal fun authorizeBackgroundStandby(): Boolean {
         val config = mutable.value
-        if (!config.enabled || !config.autoAnswer || !config.audioVerified || !config.credentialsConfigured) return false
+        if (config.nativePhoneCompatibility || !config.enabled || !config.autoAnswer || !config.audioVerified || !config.credentialsConfigured) return false
         if (config.backgroundStandbyAuthorized) return true
         if (!prefs.edit().putBoolean(BACKGROUND_AUTHORIZED, true).commit()) return false
         mutable.value = config.copy(backgroundStandbyAuthorized = true)
@@ -144,11 +146,13 @@ class CallSettings(
     private fun read(): CallConfig = runCatching {
         val defaults = CallConfig()
         val enabled = prefs.getBoolean("enabled", false)
+        val nativeCompatibility = prefs.getBoolean("native_phone_compatibility", false)
         val verified = prefs.getString("audio_verified_build", null)?.let { it == Build.FINGERPRINT } == true
         CallConfig(
             enabled = enabled,
-            autoAnswer = enabled && verified && prefs.getBoolean("auto_answer", false),
-            backgroundStandbyAuthorized = enabled && verified && prefs.getBoolean("auto_answer", false) &&
+            nativePhoneCompatibility = nativeCompatibility,
+            autoAnswer = !nativeCompatibility && enabled && verified && prefs.getBoolean("auto_answer", false),
+            backgroundStandbyAuthorized = !nativeCompatibility && enabled && verified && prefs.getBoolean("auto_answer", false) &&
                 prefs.getBoolean(BACKGROUND_AUTHORIZED, false),
             autoAnswerDelaySeconds = prefs.getInt("auto_answer_delay_seconds", defaults.autoAnswerDelaySeconds)
                 .coerceIn(CallConfig.MIN_AUTO_ANSWER_DELAY_SECONDS, CallConfig.MAX_AUTO_ANSWER_DELAY_SECONDS),

@@ -70,6 +70,10 @@ internal data class CallDeviceReadiness(
 
 internal data class CallDeviceControls(
     val readiness: CallDeviceReadiness,
+    val canAnswerRinging: Boolean,
+    val allowAnswerRinging: () -> Unit,
+    val accessibilityAvailable: Boolean,
+    val accessibilityAction: () -> Unit,
     val phoneActionLabel: Int,
     val notificationActionLabel: Int,
     val phoneAction: () -> Unit,
@@ -85,16 +89,28 @@ internal fun rememberCallDeviceControls(runtime: CallRuntime, onSettingsError: (
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val scope = rememberCoroutineScope()
     var status by remember(context) { mutableStateOf(readCallDeviceReadiness(context)) }
+    fun canAnswerRinging() = context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED
+    fun accessibilityAvailable() = com.wangzan101.mika.cap.phone.a11y.ScreenAccessibility.instance.value != null
+    var answerAllowed by remember(context) { mutableStateOf(canAnswerRinging()) }
+    var accessibilityEnabled by remember(context) { mutableStateOf(accessibilityAvailable()) }
+    var answerDenied by rememberSaveable { mutableStateOf(false) }
     var phoneDenied by rememberSaveable { mutableStateOf(false) }
     var notificationDenied by rememberSaveable { mutableStateOf(false) }
 
     fun readBack() {
+        answerAllowed = canAnswerRinging()
+        accessibilityEnabled = accessibilityAvailable()
+        if (answerAllowed) answerDenied = false
         status = readCallDeviceReadiness(context)
         if (status.phoneAllowed) phoneDenied = false
         if (status.notificationBlock != CallNotificationBlock.Permission) notificationDenied = false
         scope.launch { runtime.refresh() }
     }
 
+    val requestAnswer = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        readBack()
+        answerDenied = !answerAllowed
+    }
     val requestPhone = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         readBack()
         phoneDenied = !status.phoneAllowed
@@ -137,6 +153,16 @@ internal fun rememberCallDeviceControls(runtime: CallRuntime, onSettingsError: (
     val requestNotification = status.notificationBlock == CallNotificationBlock.Permission && !notificationDenied
     return CallDeviceControls(
         readiness = status,
+        canAnswerRinging = answerAllowed,
+        allowAnswerRinging = {
+            when {
+                canAnswerRinging() -> readBack()
+                answerDenied -> openSettings(appDetails)
+                else -> requestAnswer.launch(Manifest.permission.ANSWER_PHONE_CALLS)
+            }
+        },
+        accessibilityAvailable = accessibilityEnabled,
+        accessibilityAction = { openSettings(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), appDetails) },
         phoneActionLabel = if (phoneDenied) R.string.calls_device_open_app_settings else R.string.calls_device_allow_phone,
         notificationActionLabel = if (requestNotification) R.string.calls_device_allow_notifications else R.string.calls_notification_settings,
         phoneAction = {
@@ -287,4 +313,21 @@ internal fun CallLockedDialPendingRow(state: CallRuntimeState, enabled: Boolean,
             }
         }
     }
+}
+
+/** These actions only open platform consent UI; they never grant a permission or a phone role. */
+@Composable
+internal fun CallNativeCompatibilityRows(device: CallDeviceControls, enabled: Boolean) {
+    ListRow(
+        MikaIcons.Phone, stringResource(R.string.calls_native_answer_permission),
+        stringResource(if (device.canAnswerRinging) R.string.calls_native_answer_granted else R.string.calls_native_answer_note),
+        tone = if (device.canAnswerRinging) TileTone.Ok else TileTone.Warn,
+        onClick = device.allowAnswerRinging.takeIf { enabled && !device.canAnswerRinging },
+    ) { if (enabled && !device.canAnswerRinging) RowChevron() }
+    ListRow(
+        MikaIcons.Gear, stringResource(R.string.calls_native_accessibility),
+        stringResource(if (device.accessibilityAvailable) R.string.calls_device_permission_granted else R.string.calls_native_accessibility_note),
+        tone = if (device.accessibilityAvailable) TileTone.Ok else TileTone.Warn,
+        onClick = device.accessibilityAction.takeIf { enabled && !device.accessibilityAvailable },
+    ) { if (enabled && !device.accessibilityAvailable) RowChevron() }
 }
