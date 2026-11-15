@@ -34,7 +34,12 @@ internal class CallTelecomAccess(private val context: Context) {
     private fun managePermission(): Boolean = Build.VERSION.SDK_INT >= 31 &&
         runCatching { telecom?.hasManageOngoingCallsPermission() == true }.getOrDefault(false)
 
+    /** True only after a confirmed OEM refusal and successful rollback, not a setup error. */
+    var manualFallbackEligible: Boolean = false
+        private set
+
     fun prepare(shell: IMikaShell): String? {
+        manualFallbackEligible = false
         if (!supported) return "电话伴侣模式需要 Android 12 及以上、主用户及运营商通话功能"
         if (!hasPhonePermissions()) return "请在 Mika 的系统权限中允许电话权限"
         val original = readOp(shell) ?: return "无法读回电话权限状态"
@@ -44,12 +49,23 @@ internal class CallTelecomAccess(private val context: Context) {
         if (original != "allow") {
             if (!journal.edit().putString(PREVIOUS_OP, original).commit()) return "无法保存电话权限还原信息"
             val change = command(shell, "cmd appops set --user $user $pkg MANAGE_ONGOING_CALLS allow")
-            if (change != CallTelecomCommandOutcome.OK || readOp(shell) != "allow" || !managePermission()) {
-                rollback(shell)
+            val readBack = readOp(shell)
+            val granted = runCatching { telecom?.hasManageOngoingCallsPermission() }.getOrNull()
+            if (change != CallTelecomCommandOutcome.OK || readBack != "allow" || granted != true) {
+                val restored = rollback(shell)
+                manualFallbackEligible = CallFallbackPolicy.confirmedRefusal(
+                    commandSucceeded = change == CallTelecomCommandOutcome.OK,
+                    readBack = readBack, manageGranted = granted, restored = restored,
+                )
                 return change.appOpsFailureMessage
             }
-        } else if (!managePermission()) {
-            return "此系统不允许 Mika 管理运营商通话"
+        } else {
+            val granted = runCatching { telecom?.hasManageOngoingCallsPermission() }.getOrNull()
+            if (granted != true) {
+                val restored = rollback(shell)
+                manualFallbackEligible = CallFallbackPolicy.confirmedRefusal(true, original, granted, restored)
+                return "此系统不允许 Mika 管理运营商通话"
+            }
         }
         // No public API lists this test override. Reuse external setup when the allow was
         // already granted independently; only remove a registration made by this runtime.

@@ -44,7 +44,7 @@ data class CallFollowUp(
 data class CallRecord(
     val id: String,
     val number: String?,
-    val direction: CallDirection,
+    val direction: CallDirection?,
     val startedAtMs: Long,
     val endedAtMs: Long,
     val result: String,

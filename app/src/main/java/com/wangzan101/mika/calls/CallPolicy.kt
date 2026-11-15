@@ -26,6 +26,8 @@ data class CallConfig(
     val bypassIncomingNumbers: Set<String> = emptySet(),
     val autoAnswerPausedUntilMs: Long? = null,
     val activeVoiceProfileId: String = CallVoiceProfile.DEFAULT_ID,
+    /** Runtime-only contextual manual session after verified companion refusal. Never persisted. */
+    val nativePhoneCompatibility: Boolean = false,
     internal val backgroundStandbyAuthorized: Boolean = false,
 ) {
     companion object {
@@ -87,7 +89,7 @@ internal object CallPolicy {
         config.autoAnswerPausedUntilMs?.takeIf { it > nowMs }?.minus(nowMs) ?: 0L
 
     fun callerAllowed(config: CallConfig, number: String?, nowMs: Long = System.currentTimeMillis()): Boolean {
-        if (!config.enabled || !config.autoAnswer || !config.credentialsConfigured || !config.audioVerified) return false
+        if (config.nativePhoneCompatibility || !config.enabled || !config.autoAnswer || !config.credentialsConfigured || !config.audioVerified) return false
         if (autoAnswerPauseRemainingMs(config, nowMs) > 0L || isBypassed(config, number)) return false
         if (number == null) return config.allowAllIncoming // Explicit all includes unavailable caller ID.
         val key = incomingMatchKey(number) ?: return false
@@ -144,7 +146,7 @@ internal object CallPolicy {
 
     fun prompt(
         custom: String,
-        direction: CallDirection,
+        direction: CallDirection?,
         ownerRules: String? = null,
         task: CallTaskBrief? = null,
     ): String = buildString {
@@ -152,6 +154,7 @@ internal object CallPolicy {
         append("这是实时电话。开场白由应用单独播放；听清对方后直接回答当下的问题，不再问候或自我介绍。不要冒充机主、真人，也不要猜测机主现在是否方便。")
         append(when {
             direction == CallDirection.INCOMING -> "仅代接电话并记下可转告的简短留言。"
+            direction == null -> "机主邀请你加入已接通的系统电话，拨打方向未确认。听清对方的来意，按机主保存的说明沟通；不要猜测拨打目的。"
             outgoingTask == null -> "机主未提供本次拨打目标。不要根据号码或聊天内容猜测目的，只询问是否有可转告的信息。"
             else -> "这是机主主动发起的电话。开场后核对通话对象或是否由合适人员处理；核对后简短说明来意，围绕目标询问明确答复，有必问事项就逐项询问。如不方便或对象不匹配，不透露细节，只记下情况。"
         })

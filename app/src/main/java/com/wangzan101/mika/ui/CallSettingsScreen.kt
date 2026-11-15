@@ -312,6 +312,8 @@ private fun CallSettingsWorkspace(
                             onVerifyAudio = { verified -> perform { runtime.setAudioVerified(verified) } },
                             onDefaultSim = { id -> scope.launch { save { it.copy(defaultOutgoingSimId = id) } } },
                             onSummaryEnabled = { enabled -> scope.launch { save { it.copy(summaryEnabled = enabled) } } },
+                            onEnableManualFallback = { perform { runtime.enableManualFallback() } },
+                            onCancelManualFallback = { perform(priority = true) { runtime.cancelManualFallback() } },
                         )
                     }
                 }
@@ -508,7 +510,7 @@ private fun CallReceivePage(
         }
     }
     val autoLabel = stringResource(R.string.calls_auto_answer)
-    val canTurnOn = ready && config.audioVerified && state.phase == CallPhase.IDLE &&
+    val canTurnOn = !config.nativePhoneCompatibility && ready && config.audioVerified && state.phase == CallPhase.IDLE &&
         (config.allowAllIncoming || config.allowedIncomingNumbers.isNotEmpty())
     GroupCard {
         Row(
@@ -522,12 +524,13 @@ private fun CallReceivePage(
             })
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(autoLabel, style = MaterialTheme.typography.titleMedium)
-                Text(autoAnswerSummary(config, state), style = MaterialTheme.typography.bodySmall, color = MikaTheme.colors.ink3)
+                Text(if (config.nativePhoneCompatibility) stringResource(R.string.calls_native_manual_only) else autoAnswerSummary(config, state),
+                    style = MaterialTheme.typography.bodySmall, color = MikaTheme.colors.ink3)
             }
             MikaSwitch(
                 config.autoAnswer, onToggle,
                 modifier = Modifier.testTag("call-auto-answer").semantics { contentDescription = autoLabel },
-                enabled = controlsEnabled && (config.autoAnswer || canTurnOn),
+                enabled = !config.nativePhoneCompatibility && controlsEnabled && (config.autoAnswer || canTurnOn),
             )
         }
         if (!ready || !config.audioVerified) {
@@ -604,6 +607,7 @@ private fun CallPreferencesPage(
     onVoiceProfiles: () -> Unit, onRecords: () -> Unit,
     onVerifyAudio: (Boolean) -> Unit, onDefaultSim: (String?) -> Unit,
     onSummaryEnabled: (Boolean) -> Unit,
+    onEnableManualFallback: () -> Unit, onCancelManualFallback: () -> Unit,
     onHelperSetup: () -> Unit, onStartStandby: () -> Unit,
 ) {
     var deviceOpen by rememberSaveable { mutableStateOf(!ready || !config.audioVerified) }
@@ -643,6 +647,19 @@ private fun CallPreferencesPage(
             subtitle = stringResource(readinessSummary(config, ready))) { deviceOpen = !deviceOpen }
         if (deviceOpen) {
             CallPermissionRows(device, state.shellConnected, canConfigure, onHelperSetup)
+            if (state.manualFallbackAvailable || state.manualFallbackActive) {
+                ListRow(MikaIcons.Phone, stringResource(R.string.calls_native_title),
+                    stringResource(R.string.calls_native_note),
+                    onClick = onEnableManualFallback.takeIf { canConfigure && !state.manualFallbackActive }) {
+                    if (!state.manualFallbackActive) RowChevron()
+                }
+                if (state.manualFallbackActive) {
+                    CallNativeCompatibilityRows(device, canConfigure)
+                    TextButton(onClick = onCancelManualFallback, enabled = !stopBusy) {
+                        Text(stringResource(R.string.calls_native_cancel))
+                    }
+                }
+            }
             CallReadinessActions(config, state, ready, profile, canConfigure, stopBusy, device.readiness,
                 onPrepare, onStop, onCredentials)
             val canVerify = canConfigure && (ready || config.audioVerified)

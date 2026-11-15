@@ -30,6 +30,11 @@ open class ScreenAccessibility : AccessibilityService() {
     private class DisplayEvent(val displayId: Int, val event: AccessibilityEvent)
 
 
+    internal suspend fun handBackCall(id: String) = callOverlay?.handBack(id)
+        ?: com.wangzan101.mika.calls.NativeHandBackResult.NOT_ACTIVE
+
+    private var callOverlay: com.wangzan101.mika.calls.NativeCallOverlay? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         // 不少 App 把显示结果的文字控件标成「对无障碍不重要」,不读它们就看不到结果;配置文件里已声明,
@@ -41,6 +46,8 @@ open class ScreenAccessibility : AccessibilityService() {
             }
         }
         _instance.value = this
+        callOverlay?.close()
+        callOverlay = com.wangzan101.mika.calls.NativeCallOverlay(this).also { it.start() }
         // 配对时读码、引导页打勾都看它;连上和断开各记一句,排查「明明开着却当没开」
         Log.i(TAG, "accessibility service connected")
     }
@@ -57,6 +64,8 @@ open class ScreenAccessibility : AccessibilityService() {
     }
 
     private fun clearInstance() {
+        callOverlay?.close()
+        callOverlay = null
         _instance.compareAndSet(this, null)
         overlayHost?.closeAll()
         overlayHost = null
