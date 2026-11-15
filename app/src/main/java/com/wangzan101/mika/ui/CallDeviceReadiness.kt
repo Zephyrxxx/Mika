@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.telecom.TelecomManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
@@ -71,6 +72,9 @@ internal data class CallDeviceReadiness(
 
 internal data class CallDeviceControls(
     val readiness: CallDeviceReadiness,
+    val stockDialer: Boolean,
+    val canAnswerRinging: Boolean,
+    val allowAnswerRinging: () -> Unit,
     val needsDialerRole: Boolean,
     val requestDialerRole: () -> Unit,
     val phoneActionLabel: Int,
@@ -88,6 +92,12 @@ internal fun rememberCallDeviceControls(runtime: CallRuntime, onSettingsError: (
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val scope = rememberCoroutineScope()
     val roles = context.getSystemService(RoleManager::class.java)
+    val telecom = context.getSystemService(TelecomManager::class.java)
+    fun usesStockDialer() = telecom?.defaultDialerPackage?.let { it != context.packageName && it == telecom.systemDialerPackage } == true
+    fun canAnswerRinging() = context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED
+    var stockDialer by remember(context) { mutableStateOf(usesStockDialer()) }
+    var answerAllowed by remember(context) { mutableStateOf(canAnswerRinging()) }
+    var answerDenied by rememberSaveable { mutableStateOf(false) }
     fun needsDialerRole() = roles?.isRoleAvailable(RoleManager.ROLE_DIALER) == true &&
         !roles.isRoleHeld(RoleManager.ROLE_DIALER)
     var missingDialerRole by remember(context) { mutableStateOf(needsDialerRole()) }
@@ -96,6 +106,9 @@ internal fun rememberCallDeviceControls(runtime: CallRuntime, onSettingsError: (
     var notificationDenied by rememberSaveable { mutableStateOf(false) }
 
     fun readBack() {
+        stockDialer = usesStockDialer()
+        answerAllowed = canAnswerRinging()
+        if (answerAllowed) answerDenied = false
         missingDialerRole = needsDialerRole()
         status = readCallDeviceReadiness(context)
         if (status.phoneAllowed) phoneDenied = false
@@ -104,6 +117,10 @@ internal fun rememberCallDeviceControls(runtime: CallRuntime, onSettingsError: (
     }
 
     val requestDialer = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { readBack() }
+    val requestAnswer = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        readBack()
+        answerDenied = !answerAllowed
+    }
     val requestPhone = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         readBack()
         phoneDenied = !status.phoneAllowed
@@ -146,6 +163,10 @@ internal fun rememberCallDeviceControls(runtime: CallRuntime, onSettingsError: (
     val requestNotification = status.notificationBlock == CallNotificationBlock.Permission && !notificationDenied
     return CallDeviceControls(
         readiness = status,
+        stockDialer = stockDialer, canAnswerRinging = answerAllowed,
+        allowAnswerRinging = {
+            if (answerDenied) openSettings(appDetails) else requestAnswer.launch(Manifest.permission.ANSWER_PHONE_CALLS)
+        },
         needsDialerRole = missingDialerRole,
         requestDialerRole = {
             if (roles != null && needsDialerRole()) {

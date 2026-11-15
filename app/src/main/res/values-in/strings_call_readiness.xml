@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="calls_stock_ring_title">Jawab dengan tombol AI mengambang</string>
+    <string name="calls_stock_ring_permission">Ketuk untuk mengizinkan Mika menjawab lewat aplikasi telepon sistem.</string>
+    <string name="calls_stock_ring_hint">Saat telepon berdering, ketuk tombol jawab di bilah mengambang.</string>
     <string name="calls_auto_setup_after_call">Jawab otomatis dapat diaktifkan setelah panggilan ini berakhir.</string>
     <string name="calls_auto_choose_dialer">Ketuk untuk memilih Mika sebagai aplikasi telepon default agar dapat menjawab otomatis.</string>
     <string name="calls_auto_open_setup">Ketuk untuk menyelesaikan pengaturan panggilan AI dan memeriksa audio panggilan.</string>
