@@ -143,9 +143,10 @@ object NioFdSys : FdSys {
     }
 
     override fun chmod(fd: OpenFd, mode: Int) {
-        val perms = java.nio.file.attribute.PosixFilePermissions.fromString(
-            (0..8).joinToString("") { i -> if (mode and (1 shl (8 - i)) != 0) "rwx"[i % 3].toString() else "-" },
-        )
-        Files.setPosixFilePermissions(fd(fd).path, perms)
+        Files.setPosixFilePermissions(fd(fd).path, perms(mode))
     }
+
+    private fun perms(mode: Int) = java.nio.file.attribute.PosixFilePermissions.fromString(
+        (0..8).joinToString("") { i -> if (mode and (1 shl (8 - i)) != 0) "rwx"[i % 3].toString() else "-" },
+    )
 }

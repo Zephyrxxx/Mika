@@ -128,7 +128,7 @@ class WorkspaceFileGate(private val sys: FdSys) {
 
     /**
      * 删掉 `<root>/<rel>` 整棵树:每一层都相对上一层的句柄打开、不跟随链接,链接只删链接本身。
-     * 删的过程中被换成链接的目录不会被跟进去。只读目录先改成可写。
+     * 删的过程中被换成链接的目录不会被跟进去。仅对安全打开的目录句柄改权限;无法打开则保守失败。
      */
     fun deleteTree(root: File, rel: String) {
         val segs = segments(rel)
@@ -144,6 +144,7 @@ class WorkspaceFileGate(private val sys: FdSys) {
         val st = sys.lstat(dir, name) ?: return
         if (st.kind == FdStat.Kind.DIR) {
             if (depth > MAX_DEPTH) throw IOException("directory tree too deep to delete")
+            // 不按名字 chmod: lstat 后目录可能被换成链接。先 no-follow 打开并验证,再按句柄改权限。
             val sub = try { sys.openDir(dir, name, create = false) } catch (e: FdSysException) { null }
             if (sub != null) sub.use {
                 // 删的过程中被挪到根目录外面的,不跟着删

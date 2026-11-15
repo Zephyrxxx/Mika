@@ -268,7 +268,8 @@ fun UsageScreen(ledger: UsageLedger, store: ProviderStore, onBack: () -> Unit, o
     val report by produceState<UsageReport?>(null, version, range, live) {
         value = withContext(Dispatchers.Default) {
             // 连着的服务商按连接先后传进去,配色按这个先后固定
-            UsageQuery.report(ledger.snapshot(), range, Instant.now(), zone, live.associate { it.id to it.name })
+            UsageQuery.report(ledger.snapshot(), range, Instant.now(), zone,
+                live.associate { it.id to it.name } + com.wangzan101.mika.integration.decision.JevDecisionPort.providerNames)
         }
     }
     // 换了时间后选中的服务商在这段里没有用量了,就退回全部

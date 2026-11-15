@@ -12,6 +12,7 @@ import com.wangzan101.mika.core.cap.phone.OperatingPace
 import com.wangzan101.mika.core.usage.DeepSeekPriceCache
 import com.wangzan101.mika.core.usage.DeepSeekRunCost
 import com.wangzan101.mika.core.usage.RunUsageTally
+import com.wangzan101.mika.integration.decision.JevUsageContext
 import com.wangzan101.mika.core.shell.AccessibilityRepair
 import com.wangzan101.mika.core.shell.HelperRestart
 import com.wangzan101.mika.ui.StatusCopy
@@ -535,6 +536,89 @@ class TaskRun(
         return RetestHint.apply(end, ProviderStore.get(service).untestedMainProvider()) { tr(R.string.fail_model_untested, it) }
     }
 
+    /** execute 收尾用的本地状态;把 finally 拆成独立函数以缩小 execute 的 suspend 状态机(超大 suspend 函数会被 ART 校验器拒绝)。 */
+    private class RunCleanup(
+        val side: CoroutineScope,
+        val resources: ResourceScope,
+        val tally: RunUsageTally,
+        val approvalControl: com.wangzan101.mika.settings.ApprovalControl,
+        val connection: com.wangzan101.mika.cap.phone.shell.ShellBinding?,
+        val smsLogin: com.wangzan101.mika.cap.phone.sms.AndroidSmsLogin?,
+        val watcher: DeviceStateWatcher?,
+        val mute: AudioMute?,
+        val afterTask: com.wangzan101.mika.core.uistate.AfterTaskMarks?,
+        val shellDeath: IBinder.DeathRecipient?,
+        val shellBinder: IBinder?,
+        val record: RunHandle?,
+        val runStore: RunStore?,
+        val mcpEvents: AutoCloseable?,
+        val liveFeed: AutoCloseable?,
+        val approval: RunApproval?,
+    )
+
+    private suspend fun cleanup(c: RunCleanup) {
+        if (resultReadyAtMs == 0L) resultReadyAtMs = SystemClock.elapsedRealtime()
+        handoffUnconsumed()
+        c.side.cancel()
+        _frames.value = null
+        _phoneFrames.value = null
+        _webOpen.value = false
+        synchronized(publishLock) { ended = true }
+        if (awake != null && service.hasQueuedRuns()) wakeHandoff = service.wakeLock.lease().also { it.acquire() }
+        awake?.close()
+        awake = null
+        c.shellDeath?.let { d -> runCatching { c.shellBinder?.unlinkToDeath(d, 0) } }
+        loop = null
+        children = null
+        // 早点关:后面收尾要等屏和网页;resources 关时还会再关一次(只关一次,不重复)
+        mcpConnections?.close()
+        mcpConnections = null
+        c.mcpEvents?.close()
+        c.liveFeed?.close()
+        c.approval?.let { c.approvalControl.end(it) }
+        gate = null
+        takeover = null
+        handoverRef = null
+        sideScope = null
+        // 借来的页面还回浏览器页(在关掉网页这一套之前)
+        withContext(Dispatchers.Main + NonCancellable) { runCatching { UserBrowser.existing()?.loans?.end(key) } }
+        withContext(Dispatchers.IO + NonCancellable) {
+            // 前面哪步抛错,屏和网页显示也照放(按建的反序)
+            try {
+                // 先定 Mika 屏上 App 的去留(留下的挪到主屏后面、正在出声的关掉)并释放屏,再还原静音:留下的不会突然出声
+                val apps = phone?.takeIf { !shellDied }?.let { p ->
+                    p.display.current?.let { d -> AppsAfterTaskEnd.finish(p.shell, d.displayId, c.afterTask) }
+                }
+                c.record?.let { r ->
+                    apps?.let { r.event(RunEvent.State(System.currentTimeMillis(), "apps_after_task", it.detail)) }
+                    val cost = c.tally.deepSeekCost?.let { usage ->
+                        val table = if (usage.hasUsage()) {
+                            withTimeoutOrNull(2_000L) { deepSeekPrices.prices() }.also {
+                                if (it == null) Log.d(TAG, "DeepSeek 价目表暂不可用")
+                            }
+                        } else null
+                        usage.estimate(table)
+                    }
+                    r.event(c.tally.event(System.currentTimeMillis(), cost))
+                    r.close()
+                    if (BuildConfig.DEBUG) c.runStore?.mirrorToExternal(r.runId)
+                }
+                // 恢复抛错也要撤掉「在跑」的登记,否则这份记录永远不归恢复处理
+                try { c.mute?.restoreAll() } finally { recovery.endRun(key) }
+                c.watcher?.close()
+            } finally {
+                try { c.resources.close() } finally { c.smsLogin?.close() }
+            }
+        }
+        phone = null
+        // 屏释放后、对外报结束前清掉:界面看到任务结束时已经没有屏了
+        _displayId.value = -1
+        _pipInput.value = null
+        _pipSoundOn.value = false
+        _appShown.value = false
+        if (c.connection != null) phoneServices.sharedShell.release()
+    }
+
     suspend fun execute(priorTurns: List<Turn>): TaskState {
         noticeTainted = NoticeTurn.tainted(priorTurns)
         // 手机一侧(内置助手、无障碍、虚拟屏)第一次 launch_app 时才接上:只用网页、沙箱的任务不需要它们
@@ -583,7 +667,8 @@ class TaskRun(
             // 用户在浏览器页上对着一页问的:那一页借给这个任务当当前网页标签(见 PageLoans);开跑时页面还开着才借得到
             val pageLoan = if (provenance.origin == RunOrigin.Ui) withContext(Dispatchers.Main) { UserBrowser.existing()?.claim(conversationId, key) } else null
             val light = env.lightModelFactory(service, session)
-            val decision = env.decisionModel(service)
+            val decision = env.decision(service)
+            val fastMode = if (decision != null) env.fastModeFactory(service) else com.wangzan101.mika.core.decision.FastMode.Off
             // 同一模型分成两个实例并不会更便宜或更快;禁止它给批量/收尾工具反而只会增加改派和逐步操作。
             // 这只跳过逐步分工,轻量角色仍可用于意图判断、标题和收尾等辅助调用。
             val routedLight = light?.takeIf {
@@ -1009,11 +1094,12 @@ class TaskRun(
                 modelFallbacks = chainModels, modelChainTags = chainTags,
                 router = routedLight?.let { ModelRouter(model, it) },
                 intentJudge = if (provenance.origin == RunOrigin.Ui) light ?: model else null,
-                intentDecision = if (provenance.origin == RunOrigin.Ui) decision else null,
+                decision = decision,
+                operationSteps = decision?.let { com.wangzan101.mika.core.decision.OperationCoordinator(it, fastMode) },
                 // 选路线是辅助判断:用轻量模型,没配用主模型
-                routes = if (speed.replay) RouteMatcher(light ?: model, routeStore, knowledge, decision) { detail ->
+                routes = if (speed.replay) RouteMatcher(light ?: model, routeStore, knowledge, decisionPort = decision, onDecision = { detail ->
                     sink.event(RunEvent.State(System.currentTimeMillis(), "jev_route", detail))
-                } else null,
+                }) else null,
                 skills = catalog,
                 memory = memory,
                 interaction = service.interaction(conversationId, channelPeer),
@@ -1026,7 +1112,7 @@ class TaskRun(
             loop = agent
             liveFeed = agent.events.subscribe(liveEvents)
             mcpExternalId?.let { mcpEvents = (service.application as MikaApp).remoteTasks.attach(it, agent.events) }
-            kit = LearnKit(switches, memory, utterances, tools, agent, catalog, knowledge, model, light, runStore, agent.flags.replay, priorTurns)
+            kit = LearnKit(switches, memory, utterances, tools, agent, catalog, knowledge, model, light, runStore, agent.flags.replay, priorTurns, decision)
             suspend fun <T> io(fallback: T, call: () -> T): T =
                 withContext(Dispatchers.IO) { runCatching(call).getOrDefault(fallback) }
             // 接管期间才订阅主屏的无障碍事件:平时没人订阅,服务不复制事件
@@ -1129,70 +1215,11 @@ class TaskRun(
                     service.refreshNotifications(this@TaskRun)
                 }
             }
-            val end = withContext(tally) { agent.run(runSpec, inbox) }
+            val end = withContext(tally + JevUsageContext({ sink.event(it) }, fastMode)) { agent.run(runSpec, inbox) }
             resultReadyAtMs = SystemClock.elapsedRealtime()
             return end.also { usedGroups = agent.usedGroups.toList() }.let(::localizeTaskFailure).let(::withRetestHint)
         } finally {
-            if (resultReadyAtMs == 0L) resultReadyAtMs = SystemClock.elapsedRealtime()
-            handoffUnconsumed()
-            side.cancel()
-            _frames.value = null
-            _phoneFrames.value = null
-            _webOpen.value = false
-            synchronized(publishLock) { ended = true }
-            if (awake != null && service.hasQueuedRuns()) wakeHandoff = service.wakeLock.lease().also { it.acquire() }
-            awake?.close()
-            awake = null
-            shellDeath?.let { d -> runCatching { shellBinder?.unlinkToDeath(d, 0) } }
-            loop = null
-            children = null
-            // 早点关:后面收尾要等屏和网页;resources 关时还会再关一次(只关一次,不重复)
-            mcpConnections?.close()
-            mcpConnections = null
-            mcpEvents?.close()
-            liveFeed?.close()
-            approval?.let { approvalControl.end(it) }
-            gate = null
-            takeover = null
-            handoverRef = null
-            sideScope = null
-            // 借来的页面还回浏览器页(在关掉网页这一套之前)
-            withContext(Dispatchers.Main + NonCancellable) { runCatching { UserBrowser.existing()?.loans?.end(key) } }
-            withContext(Dispatchers.IO + NonCancellable) {
-                // 前面哪步抛错,屏和网页显示也照放(按建的反序)
-                try {
-                    // 先定 Mika 屏上 App 的去留(留下的挪到主屏后面、正在出声的关掉)并释放屏,再还原静音:留下的不会突然出声
-                    val apps = phone?.takeIf { !shellDied }?.let { p ->
-                        p.display.current?.let { d -> AppsAfterTaskEnd.finish(p.shell, d.displayId, afterTask) }
-                    }
-                    record?.let { r ->
-                        apps?.let { r.event(RunEvent.State(System.currentTimeMillis(), "apps_after_task", it.detail)) }
-                        val cost = tally.deepSeekCost?.let { usage ->
-                            val table = if (usage.hasUsage()) {
-                                withTimeoutOrNull(2_000L) { deepSeekPrices.prices() }.also {
-                                    if (it == null) Log.d(TAG, "DeepSeek 价目表暂不可用")
-                                }
-                            } else null
-                            usage.estimate(table)
-                        }
-                        r.event(tally.event(System.currentTimeMillis(), cost))
-                        r.close()
-                        if (BuildConfig.DEBUG) runStore?.mirrorToExternal(r.runId)
-                    }
-                    // 恢复抛错也要撤掉「在跑」的登记,否则这份记录永远不归恢复处理
-                    try { mute?.restoreAll() } finally { recovery.endRun(key) }
-                    watcher?.close()
-                } finally {
-                    try { resources.close() } finally { smsLogin?.close() }
-                }
-            }
-            phone = null
-            // 屏释放后、对外报结束前清掉:界面看到任务结束时已经没有屏了
-            _displayId.value = -1
-            _pipInput.value = null
-            _pipSoundOn.value = false
-            _appShown.value = false
-            if (connection != null) phoneServices.sharedShell.release()
+            cleanup(RunCleanup(side, resources, tally, approvalControl, connection, smsLogin, watcher, mute, afterTask, shellDeath, shellBinder, record, runStore, mcpEvents, liveFeed, approval))
         }
     }
 
@@ -1337,6 +1364,7 @@ class TaskRun(
         val agent: AgentLoop, val catalog: GuideCatalog, val knowledge: KnowledgeStore,
         val model: ChatModel, val light: ChatModel?, val runStore: RunStore?,
         val routesOn: Boolean, val priorTurns: List<Turn>,
+        val decision: com.wangzan101.mika.core.decision.DecisionPort?,
     )
     @Volatile private var kit: LearnKit? = null
 
@@ -1395,8 +1423,24 @@ class TaskRun(
     suspend fun settleOutcome(end: TaskState, conversations: ConversationStore): JudgedOutcome? {
         val k = kit ?: return null
         if (end !is TaskState.Succeeded) return null
-        val judged = OutcomeJudge(k.light ?: k.model, k.model).judge(k.agent.taskText ?: goal, end.answer, k.priorTurns)
+        val evidence = if (k.decision == null) "" else withContext(Dispatchers.IO) {
+            runCatching { _runId.value?.let { id -> k.runStore?.events(id) }.orEmpty() }.getOrDefault(emptyList())
+                .filterIsInstance<RunEvent.ToolResult>().takeLast(12).joinToString("\n").take(12000)
+        }
         val runId = _runId.value
+        val decisionUsage = mutableListOf<RunEvent.State>()
+        val judged = try {
+            withContext(JevUsageContext({ decisionUsage += it })) {
+                OutcomeJudge(k.light ?: k.model, k.model, decision = k.decision)
+                    .judge(k.agent.taskText ?: goal, end.answer, k.priorTurns, evidence)
+            }
+        } finally {
+            // This judge runs after the run handle has closed. Keep its usage in the same export,
+            // while preserving the original tally's boundary (task execution only).
+            if (runId != null && decisionUsage.isNotEmpty()) withContext(Dispatchers.IO + NonCancellable) {
+                decisionUsage.forEach { k.runStore?.append(runId, it) }
+            }
+        }
         if (runId != null) withContext(Dispatchers.IO) {
             k.runStore?.append(runId, judged.event(System.currentTimeMillis()))
             if (BuildConfig.DEBUG) k.runStore?.mirrorToExternal(runId)

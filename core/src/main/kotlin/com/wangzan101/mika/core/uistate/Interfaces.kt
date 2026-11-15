@@ -24,6 +24,8 @@ import com.wangzan101.mika.core.vision.Locator
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * 一次动作落在哪里,由界面一侧给出,执行入口的不可逆判定与审批只读它:
@@ -361,7 +363,35 @@ internal class Interfaces(
     /** 主模型能看图时动作之后发的一屏:画面和元素表是同一时刻的;屏上还没有 App 时为 null。 */
     override suspend fun viewNow(): ToolDispatcher.Glance? = session.currentView()
 
+    /** Text-only registered snapshot for bounded navigation; no screenshots or password/form content. */
+    override suspend fun decisionView(): JsonObject? {
+        val s = session.snapshot()
+        if (s.web == null && s.packageName == null) return null
+        if (s.protected || s.changedDuringRead || s.elements.any { it.secret || (it.editable && !it.searchField) } || s.web?.dialog != null) return null
+        // A search box is common on navigation pages; exclude its contents without blocking other destinations.
+        val eligible = s.elements.filter { it.clickable && !it.editable && !it.secret && !it.hint &&
+            UiStates.SELECTED !in it.states && UiStates.CHECKED !in it.states && UiStates.DISABLED !in it.states }
+        val (elements, hidden) = ScreenJson.elements(s.copy(elements = eligible), 80)
+        return buildJsonObject {
+            put("ok", true); put("snapshotId", s.snapshotId); put("truncated", hidden > 0)
+            if (s.web != null) {
+                put("currentSite", runCatching { java.net.URI(s.web.url).host }.getOrNull() ?: "web")
+                put("title", s.web.title)
+            } else put("currentApp", s.packageName)
+            put("elements", elements)
+        }
+    }
+
     /** 模型此刻还看得到哪些读屏(裁剪、压缩之后);差异的 base 不在其中时发全量。 */
+    override suspend fun operationView(surface: String, texts: Map<String, String>): JsonObject? =
+        sessions[surface]?.snapshot()?.let { OperationView.json(it, surface, texts) }
+
+    override suspend fun decisionCurrent(token: String): Boolean =
+        session.peek()?.let { !it.protected && !it.changedDuringRead && OperationView.token(it) == token } == true
+
+    override fun decisionToken(surface: String, snapshotId: String): String? = sessions[surface]?.recentSnapshots
+        ?.lastOrNull { it.snapshotId == snapshotId && !it.protected && !it.changedDuringRead }?.let(OperationView::token)
+
     override fun setVisible(ids: Set<String>) { sessions.values.forEach { it.visible = ids } }
 
     /** 运行状态里写的这块屏此刻的版本(网页的手机版、电脑版);没有或读不到为 null。 */

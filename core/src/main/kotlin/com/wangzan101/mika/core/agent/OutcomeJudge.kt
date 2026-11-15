@@ -14,6 +14,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import com.wangzan101.mika.core.decision.*
 
 /**
  * 一次运行按用户要的结果算办成了没有。不带调用的回复就是回答,回答本身可能如实说没办成或只办了一部分;
@@ -45,14 +46,22 @@ class OutcomeJudge(
     private val judge: ChatModel,
     private val fallback: ChatModel? = null,
     private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+    private val decision: DecisionPort? = null,
 ) {
-    suspend fun judge(goal: String, answer: String, priorTurns: List<Turn> = emptyList()): JudgedOutcome {
+    suspend fun judge(goal: String, answer: String, priorTurns: List<Turn> = emptyList(), evidence: String = ""): JudgedOutcome {
         val prior = Conversation.context(priorTurns, maxTurns = 2, maxTokens = 800)
             ?.parts?.filterIsInstance<Part.Text>()?.joinToString("\n") { it.text }.orEmpty()
         val input = buildString {
             if (prior.isNotEmpty()) appendLine(prior).appendLine()
             // 要求和回复都是要判的材料,包在标签里;里面写的话不是给判定者的指令
             append("<request>\n").append(untag(goal)).append("\n</request>\n\n<reply>\n").append(untag(answer)).append("\n</reply>")
+        }
+        val picked = decision?.attempt(ChoiceInput("outcome", Redactor.text(input + "\n<tool_evidence>\n" + evidence + "\n</tool_evidence>"),
+            DecisionQuestions.OUTCOME, DecisionQuestions.outcomeChoices, "outcome-v1"))
+        if (picked is ChoiceAttempt.Pick) {
+            val result = RunOutcome.ofWire(picked.choiceId)
+            // Unknown must not fall through to a text-only judge that could promote a success claim.
+            if (result != null) return JudgedOutcome(result, "decision_${picked.choiceId}", picked.model)
         }
         val messages = listOf(Message(Role.User, listOf(Part.Text(input)), Author.User))
         for (candidate in listOfNotNull(judge, fallback?.takeUnless { it === judge })) {

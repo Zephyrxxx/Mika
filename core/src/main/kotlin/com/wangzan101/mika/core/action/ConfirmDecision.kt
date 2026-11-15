@@ -62,7 +62,7 @@ class ConfirmDecision(
     /** 判定放在锁屏等待之后:按此刻重新读的一屏判。 */
     suspend fun judge(tool: String, args: JsonObject, origin: Origin): Decision {
         outwardSite = null
-        if (autonomous || approvals.autonomous()) {
+        if ((autonomous || approvals.autonomous()) && (origin !is Origin.Decision || origin.planned)) {
             val target = tools.gateTarget(tool)
             if (IrreversibleDetector.needsCheck(target, args)) {
                 val aim = tools.interfaces.actionTarget(tools.declared(tool), args)
@@ -90,6 +90,7 @@ class ConfirmDecision(
         // 复看确认过的所见文字(@vN 才有):读屏里没有文字时(自绘界面)付款的同意按它核对象
         val seen = aim.seen
         val hit = IrreversibleDetector.classify(target, checked, snap, fresh)
+        if (origin is Origin.Decision && !origin.planned && hit != null) return Decision.Denied(hit)
         val risk = risks.assess(verb, hit) { fresh ?: snap }
         outwardSite = outward(hit, fresh ?: snap)
         approve(tool, checked, origin, hit, risk, fresh ?: snap, typing, seen)?.let { return it }

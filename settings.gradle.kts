@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "Mika"
 include(":core", ":app")
+includeBuild("external/mika-jev")
