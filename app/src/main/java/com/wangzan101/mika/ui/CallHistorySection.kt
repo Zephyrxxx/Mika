@@ -261,11 +261,6 @@ private fun CallHistoryItem(
                 HorizontalDivider()
                 Text(stringResource(R.string.calls_history_period, start, end),
                     style = MaterialTheme.typography.bodySmall, color = MikaTheme.colors.ink3)
-                record.intervals.forEach { part ->
-                    val seconds = (part.endMs - part.startMs).coerceAtLeast(0) / 1000
-                    val owner = if (part.ai) "AI 托管" else "人工通话"
-                    Text("$owner  ·  ${seconds / 60}分${seconds % 60}秒", style = MaterialTheme.typography.bodyMedium)
-                }
                 record.summary?.let { summary ->
                     summary.purpose?.let { Text("${stringResource(R.string.calls_summary_purpose)}：$it") }
                     if (summary.highlights.isNotEmpty()) {

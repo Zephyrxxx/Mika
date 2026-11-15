@@ -1,11 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="calls_stock_ring_title">フローティングボタンで AI が応答</string>
-    <string name="calls_stock_ring_permission">タップしてシステムの電話アプリでの着信応答を許可します。</string>
-    <string name="calls_stock_ring_hint">着信音が鳴ったらフローティングバーの応答ボタンをタップしてください。</string>
-    <string name="calls_auto_setup_after_call">通話終了後に自動応答をオンにできます。</string>
-    <string name="calls_auto_choose_dialer">自動応答には、Mika を既定の電話アプリに設定してください。タップして選択できます。</string>
-    <string name="calls_auto_open_setup">タップして AI 通話の設定と通話音声の確認を行ってください。</string>
     <string name="calls_device_allow_notifications">通知を許可</string>
     <string name="calls_device_allow_phone">電話の権限を許可</string>
     <string name="calls_device_helper">内蔵ヘルパー</string>

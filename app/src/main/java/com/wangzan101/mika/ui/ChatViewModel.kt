@@ -2350,7 +2350,6 @@ private val EVIDENCE = Regex("""(^|\n|[。.!！?？]\s*)[\s*#>\-]*\**(?:依据|�
  */
 class ToolLabels(private val tools: ToolIndex, private val legacy: LegacyNames = legacyNames()) {
     fun label(tool: String): String {
-        if (tool == com.wangzan101.mika.core.decision.OperationPlanning.TOOL) return "安排后续操作"
         val declared = (tools[tool] ?: legacy.resolve(tool)?.let { tools[it] })?.label ?: return tool
         return TOOL_LABELS[declared]?.let { tr(it) } ?: declared
     }

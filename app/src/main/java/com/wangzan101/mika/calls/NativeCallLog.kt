@@ -13,7 +13,6 @@ internal class NativeCallLog(
     val id = UUID.randomUUID().toString()
     val lines = mutableListOf<CallTranscriptLine>()
     val media = CallMediaCounters()
-    private val intervals = mutableListOf<CallInterval>()
     private var boundary = start
     var ai = false
         private set
@@ -27,12 +26,11 @@ internal class NativeCallLog(
     fun finish(now: Long) { interval(now) }
     private fun interval(now: Long) {
         if (now <= boundary) return
-        intervals += CallInterval(ai, boundary - start, now - start)
         boundary = now
     }
     fun record(summary: Boolean) = CallRecord(
         id, number, direction, wallStart, wallStart + boundary - start, result, lines.toList(),
-        intervals = intervals.toList(), task = dial?.task, audioReport = media.recordReport(),
+        task = dial?.task, audioReport = media.recordReport(),
         summaryStatus = if (summary) SummaryStatus.PENDING else SummaryStatus.NOT_REQUESTED,
     )
 }

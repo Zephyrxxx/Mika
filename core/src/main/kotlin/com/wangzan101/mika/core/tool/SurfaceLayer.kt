@@ -58,10 +58,6 @@ internal interface SurfaceLayer {
 
     /** 此刻的样子(内容和画面同一时刻);什么都没打开时为 null。观察还没记进账本。 */
     suspend fun viewNow(): ToolDispatcher.Glance?
-    suspend fun decisionView(): JsonObject? = null
-    suspend fun operationView(surface: String, texts: Map<String, String>): JsonObject? = null
-    suspend fun decisionCurrent(token: String): Boolean = false
-    fun decisionToken(surface: String, snapshotId: String): String? = null
 
     /** 此刻那个地方的版本(网页的手机版、电脑版);没有或读不到为 null。 */
     suspend fun mode(): String?

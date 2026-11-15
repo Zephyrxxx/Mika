@@ -42,6 +42,8 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
     private var ringing = false
     private var answerRequestedAt: Long? = null
     private var wasOffHook = false
+    private var pendingDial: CallRuntime.StockDial? = null
+    private var pendingDialOffHook = false
     private val keyguard = service.getSystemService(KeyguardManager::class.java)
     private val power = service.getSystemService(PowerManager::class.java)
     private var lockedButton: OverlayWindow? = null
@@ -67,9 +69,29 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
     fun start() {
         scope.launch {
             while (isActive) {
+                if (!usesStockPhone()) {
+                    answerRequestedAt = null
+                    finishCall(SystemClock.elapsedRealtime())
+                    app.calls.clearStockDial()
+                    seenRinging = false
+                    wasOffHook = false
+                    ringing = false
+                    onScreen = false
+                    syncCapsule()
+                    delay(850)
+                    continue
+                }
                 val managed = runCatching { telecom?.isInManagedCall }.getOrNull()
                 val phoneState = callState()
                 val isRinging = phoneState == TelephonyManager.CALL_STATE_RINGING
+                val ticket = app.calls.stockDial
+                if (ticket !== pendingDial) {
+                    pendingDial = ticket
+                    pendingDialOffHook = false
+                }
+                if (ticket != null && phoneState == TelephonyManager.CALL_STATE_OFFHOOK) pendingDialOffHook = true
+                if (ticket != null && (isRinging || phoneState == TelephonyManager.CALL_STATE_IDLE && pendingDialOffHook ||
+                        SystemClock.elapsedRealtime() - ticket.sentAt > 120_000L)) app.calls.clearStockDial()
                 val s = if (isRinging) null else runCatching { screen() }.getOrNull()
                 val now = SystemClock.elapsedRealtime()
                 if (current == null && isRinging && managed == true) seenRinging = true
@@ -77,7 +99,7 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
                 if (phoneState == TelephonyManager.CALL_STATE_OFFHOOK) wasOffHook = true
                 val requested = answerRequestedAt
                 val expired = requested != null && now - requested >= 10_000
-                if (expired || managed != true || !app.calls.settings.state.value.enabled ||
+                if (expired || managed != true || !app.calls.settings.state.value.enabled || !app.calls.settings.state.value.nativePhoneCompatibility ||
                     phoneState == null || phoneState == TelephonyManager.CALL_STATE_IDLE || (wasOffHook && isRinging)) {
                     answerRequestedAt = null
                     if (expired) notify("未确认 AI 接通，请查看系统电话界面")
@@ -97,7 +119,8 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
                         matchesAnsweredRing(sent, now, s.start, phoneState == TelephonyManager.CALL_STATE_OFFHOOK)
                     } == true
                     answerRequestedAt = null
-                    if (dial != null || answeredHere) begin(s)
+                    // Outgoing calls always wait for an explicit takeover button, even when dialed from Mika.
+                    if (answeredHere) begin(s)
                 }
                 val previous = current
                 val changedCall = s != null && previous != null && (abs(previous.start - s.start) >= 2200 ||
@@ -119,9 +142,10 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
     @Suppress("DEPRECATION")
     private fun callState(): Int? = runCatching { phone?.callState }.getOrNull()
 
-    private fun usesStockPhone(): Boolean {
+    private fun usesStockPhone(requireEnabled: Boolean = true): Boolean {
         val pkg = telecom?.defaultDialerPackage ?: return false
-        return app.calls.settings.state.value.enabled && pkg != app.packageName &&
+        return (!requireEnabled || (app.calls.settings.state.value.enabled &&
+            app.calls.settings.state.value.nativePhoneCompatibility && !FeatureFlags.get(service).quitRequested())) && pkg != app.packageName &&
             pkg == telecom.systemDialerPackage && app.appAccess.current().denial(pkg) == null
     }
 
@@ -131,10 +155,10 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
             audio.mode == AudioManager.MODE_IN_CALL || !usesStockPhone() ||
             telecom?.isInManagedCall != true || callState() != TelephonyManager.CALL_STATE_RINGING) return
         if (service.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
-            notify("请在 Mika 的接听页点「来电悬浮接听」，允许接听权限")
+            notify("请在 Mika 的电话设置页兼容模式卡片点「来电悬浮接听」，允许接听权限")
             return
         }
-        if (!app.calls.state.value.serviceReady || app.phone.hub.shell.value == null) {
+        if (!app.calls.state.value.serviceReady || !app.calls.state.value.deviceReady || app.phone.hub.shell.value == null) {
             notify("请先在 Mika 设置中连接内置助手并测试电话语音服务")
             return
         }
@@ -149,8 +173,8 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
         }
     }
 
-    private fun screen(): Screen? {
-        if (!usesStockPhone() || telecom?.isInManagedCall != true) return null
+    private fun screen(requireEnabled: Boolean = true): Screen? {
+        if (!usesStockPhone(requireEnabled) || telecom?.isInManagedCall != true) return null
         val default = telecom.defaultDialerPackage ?: return null
         val root = service.rootInActiveWindow ?: return null
         val pkg = root.packageName?.toString() ?: return null
@@ -201,7 +225,8 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
 
     private fun same(s: Screen?): Boolean {
         val previous = owner ?: return false
-        return s != null && previous.window == s.window && previous.pkg == s.pkg && abs(previous.start - s.start) < 2200
+        return s != null && sameNativeCall(previous.window, previous.pkg, previous.start, CallPolicy.incomingMatchKey(previous.number),
+            s.window, s.pkg, s.start, CallPolicy.incomingMatchKey(s.number))
     }
 
     private fun syncCapsule() {
@@ -257,7 +282,8 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
     private fun begin(s: Screen) {
         if (worker != null) return
         val log = current ?: return
-        if (abs(log.start - s.start) >= 2200) return
+        if (!usesStockPhone() || abs(log.start - s.start) >= 2200 ||
+            (log.number != null && s.number != null && CallPolicy.incomingMatchKey(log.number) != CallPolicy.incomingMatchKey(s.number))) return
         log.attempted = true
         owner = s
         mutedAtStart = audio.isMicrophoneMute
@@ -289,12 +315,12 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                notify(e.message?.take(90) ?: "AI 音频连接失败")
+                notify("AI 音频连接失败，已停止接管，请检查系统电话和语音配置")
             } finally {
                 withContext(NonCancellable) {
                     try {
                         if (ownsMute && audio.isMicrophoneMute) {
-                            val current = runCatching { screen() }.getOrNull()
+                            val current = runCatching { screen(requireEnabled = false) }.getOrNull()
                             if (same(current)) {
                                 current!!.mute.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                                 withTimeoutOrNull(1500) { while (audio.isMicrophoneMute) delay(75) }
@@ -336,7 +362,3 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
         val blockingLabels = setOf("通话保持中", "已保持", "切换通话", "合并通话", "正在拨号", "正在呼叫", "来电等待", "紧急电话", "On hold", "Swap", "Merge calls", "Emergency call")
     }
 }
-
-/** The stock dialer timer rounds to seconds. A stale tap must never arm a later call. */
-internal fun matchesAnsweredRing(requestedAt: Long, now: Long, callStartedAt: Long, offHook: Boolean): Boolean =
-    offHook && now - requestedAt in 0L until 10_000L && callStartedAt in (requestedAt - 2200)..now

@@ -107,20 +107,6 @@ class RunStore internal constructor(
                         appendLine("""{"type":"unreadable_event","line":${index + 1}}""")
                         continue
                     }
-                    val decisionType = (event["name"] as? JsonPrimitive)?.content
-                    if (type.content == "state" && decisionType in setOf("decision_usage", "decision_route")) {
-                        val detail = (event["detail"] as? JsonPrimitive)?.content
-                        val decision = detail?.let { runCatching { RunEvent.json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
-                        if (decision == null) {
-                            appendLine("""{"type":"unreadable_event","line":${index + 1}}""")
-                        } else {
-                            val fields = USAGE_FIELDS.getValue(decisionType!!)
-                            val metadata = decision.filter { (key, value) -> key in fields && value is JsonPrimitive }
-                            appendLine(JsonObject(metadata + mapOf("type" to JsonPrimitive(decisionType),
-                                "atMs" to ((event["atMs"] as? JsonPrimitive) ?: kotlinx.serialization.json.JsonNull))).toString())
-                        }
-                        continue
-                    }
                     val fields = USAGE_FIELDS[type.content] ?: continue
                     val metadata = event.filter { (key, value) ->
                         value is JsonPrimitive && (key == "type" || key == "atMs" || key in fields)
@@ -182,11 +168,6 @@ class RunStore internal constructor(
         internal const val RUN_JSON = "run.json"
         internal const val EVENTS = "events.jsonl"
         private val USAGE_FIELDS = mapOf(
-            "decision_usage" to setOf("provider", "providerName", "model", "requestedModel", "role", "purpose", "contextVersion",
-                "mode", "inputTokens", "outputTokens", "cachedTokens", "httpCalls", "callsWithoutUsage", "latencyMs", "status",
-                "stage", "questionCount", "totalCandidates", "requestChars", "failedQuestion", "failureKind", "selectedProbability",
-                "runnerUpProbability", "requiredProbability", "requiredMargin", "failedCandidateCount"),
-            "decision_route" to setOf("step", "mode", "reason", "planState", "source", "operation"),
             "task_started" to setOf("model"),
             "model_reply" to setOf("step", "model", "role", "tool", "inputTokens", "cachedTokens",
                 "outputTokens", "repliedAtMs", "latencyMs", "retryWaitMs"),

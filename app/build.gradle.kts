@@ -11,23 +11,20 @@ val gitHash: String = runCatching {
     providers.exec { commandLine("git", "rev-parse", "--short=7", "HEAD") }.standardOutput.asText.get().trim()
 }.getOrNull()?.takeIf { it.isNotEmpty() } ?: "dev"
 
-val customBuild = providers.gradleProperty("customBuild").map(String::toInt).orElse(620)
-require(customBuild.get() in 1..2_000_000_000)
-
 android {
     namespace = "com.wangzan101.mika"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.wangzan101.mika.phonecompat"
+        applicationId = "com.wangzan101.mika"
         minSdk = 29
         targetSdk = 35
-        versionCode = 100_000 + customBuild.get()
-        versionName = "1.0.${customBuild.get()}"
+        versionCode = 44
+        versionName = "0.1.43"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "GIT_HASH", "\"$gitHash\"")
         // 关于页版本号后的 Beta 标记;出正式版时改成 false
-        buildConfigField("boolean", "BETA", "false")
+        buildConfigField("boolean", "BETA", "true")
         buildConfigField("boolean", "ADB_LOGS", "false")
     }
 
@@ -68,7 +65,7 @@ android {
         // 用本机调试签名,能直接覆盖调试包、保留数据;可被性能工具采样。./gradlew :app:assemblePerf
         create("perf") {
             initWith(getByName("release"))
-            signingConfig = null
+            signingConfig = signingConfigs.getByName("debug")
             isProfileable = true
             matchingFallbacks += "release"
         }
@@ -98,7 +95,6 @@ kotlin {
 
 dependencies {
     implementation(files("libs/sherpa-onnx-2.0.1.aar"))
-    implementation("ai.typesafe.integration:mika-jev:0.1.0")
     implementation(project(":core"))
     implementation(libs.protobuf.lite)
     implementation(platform(libs.compose.bom))

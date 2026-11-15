@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.sp
 import com.wangzan101.mika.core.model.ModelRole
 import com.wangzan101.mika.settings.ModelContextSettings
 import com.wangzan101.mika.settings.MODEL_READ_TIMEOUT_SECONDS
+import com.wangzan101.mika.settings.DecisionSettings
 import com.wangzan101.mika.settings.ModelOption
 import com.wangzan101.mika.settings.ModelOptions
 import com.wangzan101.mika.settings.ProviderConfig
@@ -122,6 +123,7 @@ fun ModelSetupScreen(
     var pickingFallback by rememberSaveable { mutableStateOf<Int?>(null) }
     var openProvider by rememberSaveable { mutableStateOf<String?>(null) }
     var allModels by rememberSaveable { mutableStateOf(false) }
+    var openDecision by rememberSaveable { mutableStateOf(false) }
     // 账号登录的面板:在添加表单和服务商详情里都能打开,登录中关掉也不打断登录
     var signInSheet by rememberSaveable { mutableStateOf<SignInKind?>(null) }
 
@@ -143,6 +145,7 @@ fun ModelSetupScreen(
     val provider = openProvider?.let { id -> ui.providers.firstOrNull { it.id == id } }
     val role = picking
     when {
+        openDecision -> JevSettingsScreen(remember { DecisionSettings.get(context) }, onBack = { openDecision = false })
         provider != null -> {
             LaunchedEffect(provider.id) { vm.ensureListed() }
             val accountKind = when {
@@ -239,7 +242,7 @@ fun ModelSetupScreen(
                     openForm = vm::openForm, closeForm = vm::closeForm,
                     openProvider = { openProvider = it; allModels = false }, pickRole = { picking = it }, pickFallback = { pickingFallback = it }, next = onDone, openSpeech = onOpenSpeech,
                     openUsage = onOpenUsage,
-                    openDecision = { context.startActivity(Intent(context, com.wangzan101.mika.integration.decision.JevSettingsActivity::class.java)) },
+                    openDecision = { openDecision = true },
                     openSignIn = { signInSheet = it },
                     setReasoningEffort = vm::setReasoningEffort,
                     setModelContext = vm::setModelContext,

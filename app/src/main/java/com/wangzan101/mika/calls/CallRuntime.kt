@@ -186,19 +186,31 @@ class CallRuntime(private val app: MikaApp) {
         scope.launch {
             var previousMode: CallAudioMode? = null
             var previousEnabled = false
+            var previousNativeMode = settings.state.value.nativePhoneCompatibility
             settings.state.collect { config ->
-                lockedDial?.takeIf { !config.enabled || !config.credentialsConfigured || config.audioMode != it.config.audioMode ||
+                val nativeModeChanged = config.nativePhoneCompatibility != previousNativeMode
+                if (nativeModeChanged) {
+                    previousNativeMode = config.nativePhoneCompatibility
+                    clearStockDial()
+                    armed = false
+                    audioReady = false
+                    audioDetail = null
+                    stockCall?.let { log ->
+                        com.wangzan101.mika.cap.phone.a11y.ScreenAccessibility.instance.value?.handBackCall(log.id)
+                    }
+                }
+                lockedDial?.takeIf { !config.enabled || config.nativePhoneCompatibility || !config.credentialsConfigured || config.audioMode != it.config.audioMode ||
                     config.activeVoiceProfileId != it.config.activeVoiceProfileId }
                     ?.let { finishLockedDial(it, "电话设置已变更，未执行锁屏拨出") }
                 if (!hasAuthorizedIncomingStandby()) standbyService?.revokeIncomingAuthorization()
                 stopBackgroundStandbyIfUnneeded()
                 val active = work
-                if (active != null && (!config.enabled || !config.credentialsConfigured ||
+                if (active != null && (!config.enabled || config.nativePhoneCompatibility || !config.credentialsConfigured ||
                         config.audioMode != active.config.audioMode || config.activeVoiceProfileId != active.config.activeVoiceProfileId ||
                         (active.automatic && !active.answerSent && !CallPolicy.callerAllowed(config, active.track?.number)))) {
                     cancelWork("AI 电话设置已变更，电话由系统处理")
                 }
-                if (config.audioMode != previousMode || config.enabled != previousEnabled) {
+                if (config.audioMode != previousMode || config.enabled != previousEnabled || nativeModeChanged) {
                     audioReady = false
                     audioDetail = null
                     previousMode = config.audioMode
@@ -576,6 +588,7 @@ class CallRuntime(private val app: MikaApp) {
     }
 
     private fun usingSystemPhone(): Boolean {
+        if (!settings.state.value.nativePhoneCompatibility) return false
         val manager = telecom ?: return false
         val dialer = manager.defaultDialerPackage ?: return false
         return dialer != app.packageName && dialer == manager.systemDialerPackage
@@ -602,12 +615,15 @@ class CallRuntime(private val app: MikaApp) {
             if (!access.hasPhonePermissions()) return@withLock report("请允许 Mika 的电话权限")
             if (managedCallPresent() != false) return@withLock report("Android 正在通话或无法确认空闲，请稍后再准备")
             val helper = shell ?: return@withLock report("请先连接 Mika 内置助手")
-            if (usingSystemPhone()) {
+            if (settings.state.value.nativePhoneCompatibility) {
+                if (!usingSystemPhone()) return@withLock report("请保留系统原生电话作为默认电话应用")
                 armed = false
+                if (!withContext(NonCancellable + Dispatchers.IO) { access.rollback(helper) })
+                    return@withLock report("原电话伴侣配置未能还原，请关闭 AI 电话后重试")
                 if (!probeAudio()) return@withLock report(audioDetail ?: "电话音频助手未就绪")
                 val connected = com.wangzan101.mika.cap.phone.a11y.ScreenAccessibility.instance.value != null
                 detail = if (connected) "系统电话悬浮接管已准备，请在接通后的系统通话页点 AI 接管"
-                    else "请在系统无障碍设置中启用 Mika 电话兼容版，以显示通话悬浮按钮"
+                    else "请在系统无障碍设置中启用 Mika，以显示通话悬浮按钮"
                 publish()
                 return@withLock CallActionResult(connected, detail.orEmpty())
             }
@@ -615,9 +631,9 @@ class CallRuntime(private val app: MikaApp) {
             publish()
             try {
                 // The small transaction must run its rollback even when its UI caller leaves.
-                val error = withContext(NonCancellable + Dispatchers.IO) { access.prepare() }
+                val error = withContext(NonCancellable + Dispatchers.IO) { access.prepare(helper) }
                 if (!settings.state.value.enabled) {
-                    withContext(NonCancellable + Dispatchers.IO) { access.rollback() }
+                    withContext(NonCancellable + Dispatchers.IO) { access.rollback(helper) }
                     armed = false
                     return@withLock report("AI 电话已关闭")
                 }
@@ -625,7 +641,7 @@ class CallRuntime(private val app: MikaApp) {
                 readSims()
                 if (error != null) return@withLock report(error)
                 probeAudio()
-                detail = "默认电话角色已确认；请用测试电话验证双向音频"
+                detail = "电话伴侣已配置；机型的通话音频能力仍需单独验证"
                 ok(detail.orEmpty())
             } finally {
                 configuring = false
@@ -640,6 +656,10 @@ class CallRuntime(private val app: MikaApp) {
             armed = false
             configuring = true
             val active = cancelWork("AI 电话已关闭，电话由系统处理")
+            stockCall?.let { log ->
+                com.wangzan101.mika.cap.phone.a11y.ScreenAccessibility.instance.value?.handBackCall(log.id)
+            }
+            clearStockDial()
             lockedDial?.let { finishLockedDial(it, "AI 电话已关闭，未执行锁屏拨出") }
             stopBackgroundStandby()
             publish()
@@ -652,7 +672,7 @@ class CallRuntime(private val app: MikaApp) {
                         runCatching { settings.save(settings.state.value.copy(enabled = false, autoAnswer = false)) }.isSuccess
                     }
                     val cleanedAudio = awaitCleanup(active)
-                    val restoredAccess = withContext(Dispatchers.IO) { access.rollback() }
+                    val restoredAccess = withContext(Dispatchers.IO) { access.rollback(shell) }
                     Triple(savedSettings, cleanedAudio, restoredAccess)
                 }
                 saved = stopped.first
@@ -704,7 +724,7 @@ class CallRuntime(private val app: MikaApp) {
             stockDial = StockDial(normalized, taskSnapshot, SystemClock.elapsedRealtime())
             return@onMain try {
                 requireNotNull(telecom).placeCall(Uri.fromParts("tel", normalized, null), extras)
-                ok("已提交系统电话拨号；接通后核对号码，无法核对时请点胶囊手动接管")
+                ok("已提交系统电话拨号；接通后请点悬浮按钮选择 AI 接管")
             } catch (_: Exception) {
                 clearStockDial()
                 report("系统电话未接受拨号请求")
@@ -1666,6 +1686,9 @@ class CallRuntime(private val app: MikaApp) {
     ): String? = when {
         !settings.state.value.enabled -> "AI 电话已关闭"
         configuring -> "AI 电话正在配置"
+        settings.state.value.nativePhoneCompatibility && !stockDialing -> "原生电话兼容模式仅支持悬浮按钮接管和前台拨号"
+        stockDialing && !usingSystemPhone() -> "请保留系统原生电话作为默认电话应用"
+        stockDialing && com.wangzan101.mika.cap.phone.a11y.ScreenAccessibility.instance.value == null -> "请启用 Mika 无障碍服务"
         (!armed && !stockDialing) || !access.hasPhonePermissions() -> "请先准备 AI 电话"
         shell == null -> "Mika 内置助手未连接"
         !activeVoiceProfile().credentialsConfigured -> "请先配置实时语音凭据"
@@ -1700,7 +1723,7 @@ class CallRuntime(private val app: MikaApp) {
     private fun publish() {
         val config = settings.state.value
         val enabled = config.enabled
-        val calls = if (enabled) liveCalls() else emptyList()
+        val calls = if (enabled && !config.nativePhoneCompatibility) liveCalls() else emptyList()
         val current = calls.firstOrNull()
         val soleCallId = calls.singleOrNull()?.id
         if (soleCallId != liveTranscriptCallId) {
@@ -1743,16 +1766,17 @@ class CallRuntime(private val app: MikaApp) {
         }
         val profile = activeVoiceProfile()
         val serviceReady = profile.credentialsConfigured && profile.connectionTested
-        val nativePhone = enabled && usingSystemPhone()
-        val nativePrepared = nativePhone && access.hasPhonePermissions() &&
+        val nativePhone = enabled && config.nativePhoneCompatibility
+        val nativePrepared = nativePhone && usingSystemPhone() && access.supported && access.hasPhonePermissions() &&
             com.wangzan101.mika.cap.phone.a11y.ScreenAccessibility.instance.value != null
-        val deviceReady = enabled && (armed || nativePrepared) && shell != null && audioReady
-        val manualReady = deviceReady && serviceReady && (nativePrepared || prerequisite(ignoreWork = true, notificationReady = notificationReady) == null)
+        val deviceReady = enabled && ((armed && !config.nativePhoneCompatibility) || nativePrepared) && shell != null && audioReady
+        val manualReady = deviceReady && serviceReady && prerequisite(ignoreWork = true,
+            notificationReady = notificationReady, stockDialing = nativePrepared) == null
         val dialReady = manualReady && (nativePhone || sims.isNotEmpty())
         val autoAnswerReady = !nativePhone && manualReady && config.audioVerified && CallStandbyService.notificationsAvailable(app) &&
             (config.allowAllIncoming || config.allowedIncomingNumbers.isNotEmpty())
         mutable.value = CallRuntimeState(
-            prepared = enabled && (armed || nativePrepared) && !configuring,
+            prepared = enabled && ((armed && !config.nativePhoneCompatibility) || nativePrepared) && !configuring,
             phase = current?.phase ?: when {
                 stockCall != null -> CallPhase.ACTIVE
                 active?.direction == CallDirection.OUTGOING -> CallPhase.DIALING
@@ -1785,7 +1809,7 @@ class CallRuntime(private val app: MikaApp) {
             canAnswer = enabled && current?.phase == CallPhase.RINGING && current.direction == CallDirection.INCOMING &&
                 !current.suppressed && calls.size == 1 && (active == null || active.track === current && !active.answerSent && active.stopReason.value == null) &&
                 prerequisite(ignoreWork = true, notificationReady = notificationReady) == null && carrierCall(current.call),
-            canHangUp = enabled && armed && current != null && current.phase != CallPhase.DISCONNECTING &&
+            canHangUp = enabled && !config.nativePhoneCompatibility && armed && current != null && current.phase != CallPhase.DISCONNECTING &&
                 calls.size == 1 && carrierCall(current.call),
             canTakeOver = stockCall?.ai == true || (active != null && active.stopReason.value == null),
             backgroundStandbyRunning = isIncomingStandbyRunning(),

@@ -17,7 +17,8 @@ internal class NativeCallAudio(private val app: MikaApp) {
     ) {
         val runtime = app.calls
         val config = runtime.settings.state.value
-        check(config.enabled) { "请先启用 AI 电话" }
+        val credentialsRevision = runtime.settings.credentialsRevision.value
+        check(config.enabled && config.nativePhoneCompatibility) { "请先启用 AI 电话" }
         val helper = checkNotNull(app.phone.hub.shell.value) { "请先连接 Mika 内置助手" }
         val profile = checkNotNull(runtime.voiceProfiles.get(config.activeVoiceProfileId)) { "请选择电话语音配置" }
         check(profile.connectionTested) { "请先测试实时语音连接" }
@@ -33,7 +34,9 @@ internal class NativeCallAudio(private val app: MikaApp) {
         var opened = false
         val audio = app.getSystemService(AudioManager::class.java)
         fun audioTargetCurrent(): Boolean = stillCurrent() &&
-            app.phone.hub.shell.value === helper && runtime.settings.state.value.enabled &&
+            app.phone.hub.shell.value === helper && runtime.settings.state.value.enabled && runtime.settings.state.value.nativePhoneCompatibility &&
+            runtime.settings.state.value.activeVoiceProfileId == config.activeVoiceProfileId &&
+            runtime.settings.credentialsRevision.value == credentialsRevision &&
             runtime.settings.state.value.audioMode == config.audioMode && audio.isMicrophoneMute
         try {
             val voice = withTimeout(8_000) {

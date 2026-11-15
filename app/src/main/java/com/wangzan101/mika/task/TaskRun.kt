@@ -12,7 +12,6 @@ import com.wangzan101.mika.core.cap.phone.OperatingPace
 import com.wangzan101.mika.core.usage.DeepSeekPriceCache
 import com.wangzan101.mika.core.usage.DeepSeekRunCost
 import com.wangzan101.mika.core.usage.RunUsageTally
-import com.wangzan101.mika.integration.decision.JevUsageContext
 import com.wangzan101.mika.core.shell.AccessibilityRepair
 import com.wangzan101.mika.core.shell.HelperRestart
 import com.wangzan101.mika.ui.StatusCopy
@@ -667,8 +666,7 @@ class TaskRun(
             // 用户在浏览器页上对着一页问的:那一页借给这个任务当当前网页标签(见 PageLoans);开跑时页面还开着才借得到
             val pageLoan = if (provenance.origin == RunOrigin.Ui) withContext(Dispatchers.Main) { UserBrowser.existing()?.claim(conversationId, key) } else null
             val light = env.lightModelFactory(service, session)
-            val decision = env.decision(service)
-            val fastMode = if (decision != null) env.fastModeFactory(service) else com.wangzan101.mika.core.decision.FastMode.Off
+            val decision = env.decisionModel(service)
             // 同一模型分成两个实例并不会更便宜或更快;禁止它给批量/收尾工具反而只会增加改派和逐步操作。
             // 这只跳过逐步分工,轻量角色仍可用于意图判断、标题和收尾等辅助调用。
             val routedLight = light?.takeIf {
@@ -1094,12 +1092,11 @@ class TaskRun(
                 modelFallbacks = chainModels, modelChainTags = chainTags,
                 router = routedLight?.let { ModelRouter(model, it) },
                 intentJudge = if (provenance.origin == RunOrigin.Ui) light ?: model else null,
-                decision = decision,
-                operationSteps = decision?.let { com.wangzan101.mika.core.decision.OperationCoordinator(it, fastMode) },
+                intentDecision = if (provenance.origin == RunOrigin.Ui) decision else null,
                 // 选路线是辅助判断:用轻量模型,没配用主模型
-                routes = if (speed.replay) RouteMatcher(light ?: model, routeStore, knowledge, decisionPort = decision, onDecision = { detail ->
+                routes = if (speed.replay) RouteMatcher(light ?: model, routeStore, knowledge, decision) { detail ->
                     sink.event(RunEvent.State(System.currentTimeMillis(), "jev_route", detail))
-                }) else null,
+                } else null,
                 skills = catalog,
                 memory = memory,
                 interaction = service.interaction(conversationId, channelPeer),
@@ -1112,7 +1109,7 @@ class TaskRun(
             loop = agent
             liveFeed = agent.events.subscribe(liveEvents)
             mcpExternalId?.let { mcpEvents = (service.application as MikaApp).remoteTasks.attach(it, agent.events) }
-            kit = LearnKit(switches, memory, utterances, tools, agent, catalog, knowledge, model, light, runStore, agent.flags.replay, priorTurns, decision)
+            kit = LearnKit(switches, memory, utterances, tools, agent, catalog, knowledge, model, light, runStore, agent.flags.replay, priorTurns)
             suspend fun <T> io(fallback: T, call: () -> T): T =
                 withContext(Dispatchers.IO) { runCatching(call).getOrDefault(fallback) }
             // 接管期间才订阅主屏的无障碍事件:平时没人订阅,服务不复制事件
@@ -1215,7 +1212,7 @@ class TaskRun(
                     service.refreshNotifications(this@TaskRun)
                 }
             }
-            val end = withContext(tally + JevUsageContext({ sink.event(it) }, fastMode)) { agent.run(runSpec, inbox) }
+            val end = withContext(tally) { agent.run(runSpec, inbox) }
             resultReadyAtMs = SystemClock.elapsedRealtime()
             return end.also { usedGroups = agent.usedGroups.toList() }.let(::localizeTaskFailure).let(::withRetestHint)
         } finally {
@@ -1364,7 +1361,6 @@ class TaskRun(
         val agent: AgentLoop, val catalog: GuideCatalog, val knowledge: KnowledgeStore,
         val model: ChatModel, val light: ChatModel?, val runStore: RunStore?,
         val routesOn: Boolean, val priorTurns: List<Turn>,
-        val decision: com.wangzan101.mika.core.decision.DecisionPort?,
     )
     @Volatile private var kit: LearnKit? = null
 
@@ -1423,24 +1419,8 @@ class TaskRun(
     suspend fun settleOutcome(end: TaskState, conversations: ConversationStore): JudgedOutcome? {
         val k = kit ?: return null
         if (end !is TaskState.Succeeded) return null
-        val evidence = if (k.decision == null) "" else withContext(Dispatchers.IO) {
-            runCatching { _runId.value?.let { id -> k.runStore?.events(id) }.orEmpty() }.getOrDefault(emptyList())
-                .filterIsInstance<RunEvent.ToolResult>().takeLast(12).joinToString("\n").take(12000)
-        }
+        val judged = OutcomeJudge(k.light ?: k.model, k.model).judge(k.agent.taskText ?: goal, end.answer, k.priorTurns)
         val runId = _runId.value
-        val decisionUsage = mutableListOf<RunEvent.State>()
-        val judged = try {
-            withContext(JevUsageContext({ decisionUsage += it })) {
-                OutcomeJudge(k.light ?: k.model, k.model, decision = k.decision)
-                    .judge(k.agent.taskText ?: goal, end.answer, k.priorTurns, evidence)
-            }
-        } finally {
-            // This judge runs after the run handle has closed. Keep its usage in the same export,
-            // while preserving the original tally's boundary (task execution only).
-            if (runId != null && decisionUsage.isNotEmpty()) withContext(Dispatchers.IO + NonCancellable) {
-                decisionUsage.forEach { k.runStore?.append(runId, it) }
-            }
-        }
         if (runId != null) withContext(Dispatchers.IO) {
             k.runStore?.append(runId, judged.event(System.currentTimeMillis()))
             if (BuildConfig.DEBUG) k.runStore?.mirrorToExternal(runId)

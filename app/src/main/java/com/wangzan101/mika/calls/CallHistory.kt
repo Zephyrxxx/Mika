@@ -41,9 +41,6 @@ data class CallFollowUp(
 }
 
 @Serializable
-data class CallInterval(val ai: Boolean, val startMs: Long, val endMs: Long)
-
-@Serializable
 data class CallRecord(
     val id: String,
     val number: String?,
@@ -57,7 +54,6 @@ data class CallRecord(
     val audioReport: CallAudioReport? = null,
     val summary: CallSummary? = null,
     val summaryStatus: SummaryStatus = SummaryStatus.NOT_REQUESTED,
-    val intervals: List<CallInterval> = emptyList(),
 ) {
     override fun toString(): String = "CallRecord(direction=$direction, result=$result)"
 }

@@ -132,7 +132,7 @@ class UpdateChecker(
         loaded = true
         val o = runCatching { Json.parseToJsonElement(file.readText()).jsonObject }.getOrNull() ?: return
         lastAttempt = (o["lastAttempt"] as? JsonPrimitive)?.longOrNull
-        val latest = (o["latest"] as? JsonObject)?.let(Releases::fromJson)?.takeIf { it.pageUrl.startsWith(MikaLinks.RELEASES + "/") && (it.apkUrl == null || runCatching { ApkIntegrity.requireOfficialUrl(it.apkUrl) }.isSuccess) }
+        val latest = (o["latest"] as? JsonObject)?.let(Releases::fromJson)
         _state.update { it.withLatest(latest) }
     }
 

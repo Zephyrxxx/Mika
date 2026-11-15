@@ -1,3 +1,0 @@
-Mika Phone Compat 0.1.42.1
-Based on Mika by wangzan101, commit a0c1ea332d3a4123a009c8d46dd740d6c6e8d4dd.
-This unofficial build uses the Android default dialer role, adds manual calling UI, and uses a distinct application and pairing name.

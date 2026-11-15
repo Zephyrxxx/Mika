@@ -96,7 +96,7 @@
     <string name="calls_sim_save_preferred">设为默认拨号 SIM</string>
     <string name="calls_sim_unavailable">默认 SIM 不可用，请重新选择。</string>
     <string name="calls_system_active">系统电话通话中</string>
-    <string name="calls_system_default">AI 已关闭。普通电话由系统当前选择的默认电话应用处理。</string>
+    <string name="calls_system_default">来电和拨号仍由系统电话处理。</string>
     <string name="calls_unknown_number">号码未显示</string>
     <string name="calls_auto_pause_30">暂停 30 分钟</string>
     <string name="calls_auto_pause_120">暂停 2 小时</string>

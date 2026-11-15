@@ -1,11 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="calls_stock_ring_title">الرد بزر الذكاء الاصطناعي العائم</string>
-    <string name="calls_stock_ring_permission">اضغط للسماح بالرد مع الاحتفاظ بتطبيق الهاتف الحالي.</string>
-    <string name="calls_stock_ring_hint">عندما يرن الهاتف، اضغط على زر الرد في الشريط العائم.</string>
-    <string name="calls_auto_setup_after_call">يمكن تفعيل الرد التلقائي بعد انتهاء هذه المكالمة.</string>
-    <string name="calls_auto_choose_dialer">اضغط لاختيار Mika كتطبيق الهاتف الافتراضي للرد التلقائي.</string>
-    <string name="calls_auto_open_setup">اضغط لإكمال إعداد مكالمات الذكاء الاصطناعي والتحقق من صوت المكالمة.</string>
     <string name="calls_device_allow_notifications">السماح بالإشعارات</string>
     <string name="calls_device_allow_phone">السماح بأذونات الهاتف</string>
     <string name="calls_device_helper">المساعد المدمج</string>

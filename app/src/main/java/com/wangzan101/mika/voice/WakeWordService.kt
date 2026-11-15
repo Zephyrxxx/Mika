@@ -11,8 +11,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.media.AudioManager
-import android.telecom.TelecomManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -27,7 +25,6 @@ import com.k2fsa.sherpa.onnx.OnlineModelConfig
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
 import com.wangzan101.mika.MikaApp
 import com.wangzan101.mika.R
-import com.wangzan101.mika.calls.CallPhase
 import com.wangzan101.mika.chat.ConversationStore
 import com.wangzan101.mika.chat.CurrentChat
 import com.wangzan101.mika.core.agent.TaskState
@@ -56,11 +53,8 @@ class WakeWordService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
     private var taskWatch: Job? = null
-    private var callWatch: Job? = null
-    private val callGate = WakeCallGate()
-    @Volatile private var speech: SpeechSession? = null
     @Volatile private var recorder: AudioRecord? = null
-    @Volatile private var pendingVoice: PendingVoice? = null
+    private var pendingVoice: PendingVoice? = null
     private var voiceOverlay: VoiceStatusOverlay? = null
 
     private sealed interface PendingVoice {
@@ -100,38 +94,8 @@ class WakeWordService : Service() {
             it.start()
             it.show(VoiceStatusOverlay.Phase.Preparing, getString(R.string.wake_loading))
         }
-        if (callWatch == null) callWatch = scope.launch {
-            while (isActive) {
-                refreshCallGate()
-                delay(100)
-            }
-        }
         if (job == null) job = scope.launch { listenLoop() }
         return START_STICKY
-    }
-
-    /** Also covers stock-dialer calls that are not yet represented in CallRuntime. */
-    @SuppressLint("MissingPermission")
-    private fun refreshCallGate() {
-        val app = application as MikaApp
-        val phase = app.calls.state.value.phase
-        val audioBusy = runCatching { getSystemService(AudioManager::class.java).mode != AudioManager.MODE_NORMAL }
-            .getOrDefault(true)
-        val telecomBusy = runCatching { getSystemService(TelecomManager::class.java).isInCall }.getOrNull()
-        val blocked = !requested(this) || wakeCallBlocked(phase != CallPhase.IDLE, audioBusy, telecomBusy)
-        val changed = callGate.update(blocked)
-        if (blocked) {
-            // Interrupt a blocking read and a live/cloud-waiting ASR session. Do not change REQUESTED.
-            recorder?.let { runCatching { it.stop() } }
-            speech?.cancel()
-            pendingVoice = null
-            if (changed && active.value) notifyState(getString(R.string.calls_auto_busy), VoiceStatusOverlay.Phase.Attention)
-        }
-    }
-
-    private fun wakeAllowed(token: Long): Boolean {
-        refreshCallGate()
-        return scope.isActive && callGate.allows(token)
     }
 
     private suspend fun listenLoop() {
@@ -154,17 +118,13 @@ class WakeWordService : Service() {
             Log.i(TAG, "Wake-word model ready")
             try {
                 while (scope.isActive) {
-                    refreshCallGate()
-                    val token = callGate.token()
-                    if (token == null) { delay(100); continue }
                     if (pendingVoice == null) notifyState(getString(R.string.wake_waiting), VoiceStatusOverlay.Phase.Waiting)
-                    val preroll = try { listenOnce(spotter, token) } catch (e: CancellationException) {
+                    val preroll = try { listenOnce(spotter) } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         Log.w(TAG, "Wake microphone capture failed; retrying", e)
                         null
                     }
-                    if (!wakeAllowed(token)) continue
                     if (preroll == null) {
                         if (!scope.isActive) break
                         notifyState(getString(R.string.wake_retrying), VoiceStatusOverlay.Phase.Error)
@@ -174,7 +134,7 @@ class WakeWordService : Service() {
                     Log.i(TAG, "Wake word detected; buffered ${preroll.size * 1000 / RATE} ms")
                     val wakeAt = SystemClock.elapsedRealtime()
                     notifyState(getString(R.string.wake_say_command), VoiceStatusOverlay.Phase.Listening)
-                    transcribeAndSubmit(preroll, wakeAt, token)
+                    transcribeAndSubmit(preroll, wakeAt)
                 }
             } finally {
                 spotter.release()
@@ -190,8 +150,7 @@ class WakeWordService : Service() {
     }
 
     @SuppressLint("MissingPermission") // Checked before starting the service.
-    private fun listenOnce(spotter: KeywordSpotter, token: Long): ShortArray? {
-        if (!wakeAllowed(token)) return null
+    private fun listenOnce(spotter: KeywordSpotter): ShortArray? {
         val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (min <= 0) {
             Log.w(TAG, "Wake microphone has no valid buffer size: $min")
@@ -220,10 +179,9 @@ class WakeWordService : Service() {
         var written = 0
         var samplesRead = 0L
         try {
-            if (!wakeAllowed(token)) return null
             rec.startRecording()
             val recordingStarted = SystemClock.elapsedRealtime()
-            while (wakeAllowed(token)) {
+            while (scope.isActive) {
                 if (samplesRead >= nextRotationAt) {
                     try {
                         val fresh = spotter.createStream()
@@ -239,7 +197,6 @@ class WakeWordService : Service() {
                     nextRotationAt += RATE
                 }
                 val count = rec.read(buffer, 0, buffer.size)
-                if (!wakeAllowed(token)) return null
                 if (count <= 0) {
                     Log.w(TAG, "Wake microphone read failed: $count")
                     return null
@@ -275,8 +232,7 @@ class WakeWordService : Service() {
         }
     }
 
-    private suspend fun transcribeAndSubmit(preroll: ShortArray, wakeAt: Long, token: Long) {
-        if (!wakeAllowed(token)) return
+    private suspend fun transcribeAndSubmit(preroll: ShortArray, wakeAt: Long) {
         val app = application as MikaApp
         if (app.voice.spec() !is SpeechEngineSpec.Provider && app.voice.spec() !is SpeechEngineSpec.Doubao) {
             Log.i(TAG, "Cloud speech recognition is not configured")
@@ -285,11 +241,7 @@ class WakeWordService : Service() {
             return
         }
         notifyState(getString(R.string.wake_say_command), VoiceStatusOverlay.Phase.Listening)
-        val session = withContext(Dispatchers.Main) {
-            if (!wakeAllowed(token)) null else app.voice.startWithPreroll("zh-CN", preroll)
-        } ?: return
-        speech = session
-        if (!wakeAllowed(token)) { session.cancel(); speech = null; return }
+        val session = withContext(Dispatchers.Main) { app.voice.startWithPreroll("zh-CN", preroll) }
         Log.i(TAG, "Cloud speech recording started")
         val terminal = CompletableDeferred<SpeechEvent>()
         val started = SystemClock.elapsedRealtime()
@@ -312,32 +264,22 @@ class WakeWordService : Service() {
         try {
             var endedBy: VoiceCommandEndpoint.End? = null
             while (scope.isActive && !terminal.isCompleted) {
-                if (!wakeAllowed(token)) return
                 delay(100)
                 endedBy = endpoint.end(SystemClock.elapsedRealtime())
                 if (endedBy != null) break
             }
             Log.i(TAG, "Cloud speech release after ${SystemClock.elapsedRealtime() - started}ms; reason=$endedBy; peak level=${endpoint.peak}")
-            if (!wakeAllowed(token)) return
             session.release()
             val releasedAt = SystemClock.elapsedRealtime()
             notifyState(getString(R.string.wake_transcribing), VoiceStatusOverlay.Phase.Transcribing)
-            val result = withTimeoutOrNull(35_000) {
-                while (!terminal.isCompleted) {
-                    if (!wakeAllowed(token)) return@withTimeoutOrNull null
-                    delay(100)
-                }
-                terminal.await()
-            }
-            if (!wakeAllowed(token)) return
-            when (result) {
+            when (val result = withTimeoutOrNull(35_000) { terminal.await() }) {
                 is SpeechEvent.Final -> {
                     Log.i(TAG, "Voice latency wake-to-record=${started - wakeAt}ms; recording=${releasedAt - started}ms; cloud-final=${SystemClock.elapsedRealtime() - releasedAt}ms")
                     val words = commandAfterWake(result.text)
                     Log.i(TAG, "Cloud speech completed; command length=${words.length}")
                     if (words.isNotEmpty()) {
                         notifyState(getString(R.string.wake_received, words.take(50)), VoiceStatusOverlay.Phase.Received)
-                        submitVoiceCommand(words, token)
+                        submitVoiceCommand(words)
                     } else notifyState(getString(R.string.wake_no_match), VoiceStatusOverlay.Phase.Error)
                 }
                 else -> {
@@ -348,13 +290,11 @@ class WakeWordService : Service() {
         } finally {
             collector.cancel()
             session.cancel()
-            if (speech === session) speech = null
             delay(1500)
         }
     }
 
-    private fun submitVoiceCommand(words: String, token: Long) {
-        if (!wakeAllowed(token)) return
+    private fun submitVoiceCommand(words: String) {
         val app = application as MikaApp
         val store = ConversationStore.shared(this)
         val prefs = getSharedPreferences(REQUEST_PREFS, Context.MODE_PRIVATE)
@@ -410,7 +350,6 @@ class WakeWordService : Service() {
         routedId?.let { prefs.edit().putString(LAST_VOICE_CONVERSATION, it)
             .putBoolean(NEW_TASK_NEXT, false).apply() }
         try {
-            if (!wakeAllowed(token)) return
             when (pending) {
                 is PendingVoice.Start -> TaskService.start(this, pending.text, pending.conversationId)
                 is PendingVoice.Answer -> TaskService.answer(this, pending.text, pending.runKey)
@@ -420,7 +359,6 @@ class WakeWordService : Service() {
             routedId?.let { watchTask(it, command) }
             Log.i(TAG, "Voice command routed as ${pending.javaClass.simpleName}")
         } catch (e: RuntimeException) {
-            if (!wakeAllowed(token)) return
             Log.w(TAG, "Voice command needs a notification tap", e)
             pendingVoice = pending
             notifyState(getString(R.string.wake_tap_execute), VoiceStatusOverlay.Phase.Attention)
@@ -526,10 +464,6 @@ class WakeWordService : Service() {
 
     override fun onDestroy() {
         active.value = false
-        callGate.update(true)
-        callWatch?.cancel()
-        speech?.cancel()
-        speech = null
         job?.cancel()
         taskWatch?.cancel()
         voiceOverlay?.close()

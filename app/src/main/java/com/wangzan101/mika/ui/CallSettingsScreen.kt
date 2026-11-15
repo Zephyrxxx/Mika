@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -107,6 +108,7 @@ private fun CallSettingsWorkspace(
     val idle = state.phase == CallPhase.IDLE
     val pendingLockedDial = state.lockedDialRequestId
     val failureText = stringResource(R.string.calls_action_failed)
+    val nativeModeSavedText = stringResource(R.string.calls_native_saved)
     val settingsErrorText = stringResource(R.string.calls_device_system_settings_failed)
     val device = rememberCallDeviceControls(runtime) { feedback = CallActionResult(false, settingsErrorText) }
     val ready = state.manualReady && device.readiness.phoneAllowed && device.readiness.callNotificationsAllowed
@@ -253,8 +255,6 @@ private fun CallSettingsWorkspace(
                             controlsEnabled = !settingsBusy && !controlBusy && (!busy || config.autoAnswer),
                             canStartStandby = canStartStandby,
                             standbyNeedsSetup = ready && !device.readiness.standbyNotificationsAllowed,
-                            needsDialerRole = device.needsDialerRole, onRequestDialer = device.requestDialerRole,
-                            stockDevice = device.takeIf { it.stockDialer },
                             onSetup = ::openDeviceSettings,
                             onToggle = { checked ->
                                 scope.launch {
@@ -313,6 +313,17 @@ private fun CallSettingsWorkspace(
                             onVerifyAudio = { verified -> perform { runtime.setAudioVerified(verified) } },
                             onDefaultSim = { id -> scope.launch { save { it.copy(defaultOutgoingSimId = id) } } },
                             onSummaryEnabled = { enabled -> scope.launch { save { it.copy(summaryEnabled = enabled) } } },
+                            onNativeCompatibility = { enabled ->
+                                perform {
+                                    val current = runtime.state.value
+                                    if (current.phase != CallPhase.IDLE || current.lockedDialRequestId != null) {
+                                        CallActionResult(false, failureText)
+                                    } else if (save { it.copy(nativePhoneCompatibility = enabled) }) {
+                                        runtime.refresh()
+                                        CallActionResult(true, nativeModeSavedText)
+                                    } else CallActionResult(false, failureText)
+                                }
+                            },
                         )
                     }
                 }
@@ -495,8 +506,6 @@ private fun LiveCallTranscript(callId: String?, lines: List<CallTranscriptLine>)
 private fun CallReceivePage(
     config: CallConfig, state: CallRuntimeState, ready: Boolean, controlsEnabled: Boolean,
     canStartStandby: Boolean, standbyNeedsSetup: Boolean,
-    needsDialerRole: Boolean, onRequestDialer: () -> Unit,
-    stockDevice: CallDeviceControls?,
     onSetup: () -> Unit, onToggle: (Boolean) -> Unit, onRules: () -> Unit, onBypass: () -> Unit,
     onPause: (Int) -> Unit, onResume: () -> Unit, onInstructions: () -> Unit, onStartStandby: () -> Unit,
 ) {
@@ -511,39 +520,11 @@ private fun CallReceivePage(
         }
     }
     val autoLabel = stringResource(R.string.calls_auto_answer)
-    if (stockDevice != null) {
-        GroupCard {
-            ListRow(MikaIcons.Phone, stringResource(R.string.calls_stock_ring_title),
-                stringResource(when {
-                    !stockDevice.canAnswerRinging -> R.string.calls_stock_ring_permission
-                    !ready -> R.string.calls_auto_open_setup
-                    else -> R.string.calls_stock_ring_hint
-                }), first = true, onClick = if (stockDevice.canAnswerRinging) onSetup else stockDevice.allowAnswerRinging) {
-                RowChevron()
-            }
-        }
-    }
-    val idle = state.phase == CallPhase.IDLE
-    val enabled = controlsEnabled && (config.autoAnswer || idle)
-    val setupComplete = ready && !state.systemPhone && config.audioVerified
-    val hint = when {
-        config.autoAnswer -> null
-        !idle -> R.string.calls_auto_setup_after_call
-        needsDialerRole -> R.string.calls_auto_choose_dialer
-        !setupComplete -> R.string.calls_auto_open_setup
-        else -> null
-    }
+    val canTurnOn = !config.nativePhoneCompatibility && ready && config.audioVerified && state.phase == CallPhase.IDLE &&
+        (config.allowAllIncoming || config.allowedIncomingNumbers.isNotEmpty())
     GroupCard {
         Row(
-            Modifier.fillMaxWidth().testTag("call-auto-answer")
-                .toggleable(config.autoAnswer, enabled = enabled, role = Role.Switch) { checked ->
-                    when {
-                        !checked -> onToggle(false)
-                        needsDialerRole -> onRequestDialer()
-                        setupComplete -> onToggle(true)
-                        else -> onSetup()
-                    }
-                }.padding(horizontal = 16.dp, vertical = 14.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
         ) {
             IconTile(MikaIcons.Bell, when (state.autoAnswerStage) {
@@ -553,10 +534,14 @@ private fun CallReceivePage(
             })
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(autoLabel, style = MaterialTheme.typography.titleMedium)
-                Text(hint?.let { stringResource(it) } ?: autoAnswerSummary(config, state),
+                Text(if (config.nativePhoneCompatibility) stringResource(R.string.calls_native_manual_only) else autoAnswerSummary(config, state),
                     style = MaterialTheme.typography.bodySmall, color = MikaTheme.colors.ink3)
             }
-            MikaSwitch(config.autoAnswer, onCheckedChange = null, enabled = enabled)
+            MikaSwitch(
+                config.autoAnswer, onToggle,
+                modifier = Modifier.testTag("call-auto-answer").semantics { contentDescription = autoLabel },
+                enabled = !config.nativePhoneCompatibility && controlsEnabled && (config.autoAnswer || canTurnOn),
+            )
         }
         if (!ready || !config.audioVerified) {
             HorizontalDivider()
@@ -632,6 +617,7 @@ private fun CallPreferencesPage(
     onVoiceProfiles: () -> Unit, onRecords: () -> Unit,
     onVerifyAudio: (Boolean) -> Unit, onDefaultSim: (String?) -> Unit,
     onSummaryEnabled: (Boolean) -> Unit,
+    onNativeCompatibility: (Boolean) -> Unit,
     onHelperSetup: () -> Unit, onStartStandby: () -> Unit,
 ) {
     var deviceOpen by rememberSaveable { mutableStateOf(!ready || !config.audioVerified) }
@@ -666,6 +652,22 @@ private fun CallPreferencesPage(
     }
 
     GroupLabel(stringResource(R.string.calls_settings_device_group))
+    GroupCard {
+        Row(
+            Modifier.fillMaxWidth().toggleable(config.nativePhoneCompatibility, enabled = canConfigure,
+                role = Role.Switch, onValueChange = onNativeCompatibility)
+                .padding(horizontal = 16.dp, vertical = 12.dp).testTag("call-native-compatibility"),
+            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(stringResource(R.string.calls_native_title), style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.calls_native_note), style = MaterialTheme.typography.bodySmall,
+                    color = MikaTheme.colors.ink3)
+            }
+            Switch(config.nativePhoneCompatibility, onCheckedChange = null, enabled = canConfigure)
+        }
+        if (config.nativePhoneCompatibility) CallNativeCompatibilityRows(device, canConfigure)
+    }
     GroupCard {
         CallFoldRow(MikaIcons.Gear, stringResource(R.string.calls_device_and_permissions), deviceOpen, "call-settings-device",
             subtitle = stringResource(readinessSummary(config, ready))) { deviceOpen = !deviceOpen }

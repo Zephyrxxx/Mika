@@ -26,6 +26,8 @@ data class CallConfig(
     val bypassIncomingNumbers: Set<String> = emptySet(),
     val autoAnswerPausedUntilMs: Long? = null,
     val activeVoiceProfileId: String = CallVoiceProfile.DEFAULT_ID,
+    /** Opt-in manual controls on the existing system Phone UI; never grants Telecom access. */
+    val nativePhoneCompatibility: Boolean = false,
     internal val backgroundStandbyAuthorized: Boolean = false,
 ) {
     companion object {
@@ -87,7 +89,7 @@ internal object CallPolicy {
         config.autoAnswerPausedUntilMs?.takeIf { it > nowMs }?.minus(nowMs) ?: 0L
 
     fun callerAllowed(config: CallConfig, number: String?, nowMs: Long = System.currentTimeMillis()): Boolean {
-        if (!config.enabled || !config.autoAnswer || !config.credentialsConfigured || !config.audioVerified) return false
+        if (config.nativePhoneCompatibility || !config.enabled || !config.autoAnswer || !config.credentialsConfigured || !config.audioVerified) return false
         if (autoAnswerPauseRemainingMs(config, nowMs) > 0L || isBypassed(config, number)) return false
         if (number == null) return config.allowAllIncoming // Explicit all includes unavailable caller ID.
         val key = incomingMatchKey(number) ?: return false

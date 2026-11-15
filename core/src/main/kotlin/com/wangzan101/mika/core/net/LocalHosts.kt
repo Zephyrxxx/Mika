@@ -35,9 +35,8 @@ object LocalHosts {
 
     /**
      * 是不是本机、局域网,或组网工具常用的 CGNAT 网段 100.64/10。
-     * 比 [isLocal] 多认这一段,只用于用户显式允许本地 HTTP 后的地址范围判断。
-     * 地址本身不能证明正在使用 VPN 或已加密;运营商共享网络也使用这段地址。
-     * 明文 HTTP 可能暴露凭据与数据,调用方仍须要求用户确认可信网络或使用 HTTPS。
+     * Tailscale 这类 VPN 给设备分这段地址、流量已在网络层加密,明文 http 也安全;
+     * 所以「明文 http 可不可接受」这类判断把它当私有地址看。比 [isLocal] 多认这一段。
      */
     fun isPrivateOrMesh(host: String): Boolean {
         if (isLocal(host)) return true

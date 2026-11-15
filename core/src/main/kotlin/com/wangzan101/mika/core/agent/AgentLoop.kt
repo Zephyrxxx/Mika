@@ -157,7 +157,7 @@ class AgentLoop(
     router: ModelRouter? = null,
     /** UI 对话第一次要用工具时的独立意图判断；null 保留评测与其他入口的原行为。 */
     intentJudge: ChatModel? = null,
-    /** 旧入口兼容;提供 decision 时不调用它。 */
+    /** 可选的类型化意图判断;不确定或失败时仍问 intentJudge,不替代主模型与执行关卡。 */
     intentDecision: com.wangzan101.mika.core.decision.DecisionModel? = null,
     /** 经验回放的路线匹配;只在 flags.replay 打开时用。 */
     routes: RouteMatcher? = null,
@@ -189,9 +189,6 @@ class AgentLoop(
     private val modelFallbacks: List<ChatModel> = emptyList(),
     private val modelChainTags: List<String?> = emptyList(),
     private val trace: RunTrace? = null,
-    private val decision: com.wangzan101.mika.core.decision.DecisionPort? = null,
-    private val fastSteps: com.wangzan101.mika.core.decision.FastStepCoordinator? = null,
-    private val operationSteps: com.wangzan101.mika.core.decision.OperationCoordinator? = null,
 ) {
     init {
         require(maxSteps > 0) { "maxSteps must be positive" }
@@ -211,7 +208,7 @@ class AgentLoop(
 
     private val caller = ModelCaller(model, tools, router, flags, retry, ::emit, ::now, autonomous, trace, modelFallbacks, modelChainTags)
     private val intentGate = intentJudge?.let {
-        IntentGate(it, model.takeUnless { main -> main === it }, intentDecision, decisionPort = decision) { detail ->
+        IntentGate(it, model.takeUnless { main -> main === it }, intentDecision) { detail ->
             emit(RunEvent.State(now(), "jev_intent", detail))
         }
     }
@@ -228,7 +225,6 @@ class AgentLoop(
      * 语言提示和回答的语言检查按它;记忆、技能的引文收的是 [UserWords.said](还认他引的自己说过的话)。
      */
     private var latestWords = ""
-    private var decisionAppLabels: Map<String, String> = emptyMap()
 
     private val _state = MutableStateFlow<TaskState>(TaskState.Idle)
     val state: StateFlow<TaskState> = _state.asStateFlow()
@@ -297,8 +293,6 @@ class AgentLoop(
             override fun cancel() = this@AgentLoop.cancel()
         })
         caller.reset(basePrompt)
-        operationSteps?.reset()
-        forceMainAfterDecision = false
         // 同意只在一次任务内有效
         confirmations?.reset()
         utterances?.clear()
@@ -426,26 +420,20 @@ class AgentLoop(
         tools.preload(task, priorTurns.lastOrNull()?.groups.orEmpty()).forEach { emit(RunEvent.State(now(), "tools_preloaded", it)) }
         var openGroups = tools.expanded
         val batchSpec = BatchRunner.spec(tools.batchable()).takeIf { flags.batchSteps }
-        val operationSpec = com.wangzan101.mika.core.decision.OperationPlanning.spec().takeIf {
-            operationSteps != null && operationSteps.mode != com.wangzan101.mika.core.decision.FastMode.Off
-        }
         fun keep(s: ToolSpec): Boolean {
             val verb = tools.verb(s.name)
             return (confirmations != null || verb != Verb.RequestConfirmation) && (memory != null || verb !in MEMORY_VERBS)
         }
         // 提示词版本按每组都展开的样子算:同一版提示词不因这次展开了哪几组而不同
-        val everything = tools.offeredNow(listOfNotNull(batchSpec), all = true).filter(::keep) + listOfNotNull(operationSpec)
-        val operationPrompt = listOfNotNull(com.wangzan101.mika.core.decision.OperationPlanning.PROMPT.takeIf { operationSpec != null },
-            "The fast actor is in SHADOW mode: it records suggestions only. After recording a plan, continue executing ordinary tools yourself. A plan is never evidence of an action."
-                .takeIf { operationSpec != null && operationSteps?.mode == com.wangzan101.mika.core.decision.FastMode.Shadow })
-        emit(RunEvent.PromptVersion(now(), PromptVersion.of(SystemPrompt.assemble(basePrompt, tools.promptSections(everything, all = true) + operationPrompt), everything)))
+        val everything = tools.offeredNow(listOfNotNull(batchSpec), all = true).filter(::keep)
+        emit(RunEvent.PromptVersion(now(), PromptVersion.of(SystemPrompt.assemble(basePrompt, tools.promptSections(everything, all = true)), everything)))
         var specs = emptyList<ToolSpec>()
         // 每次问模型之前:展开了新的组时,工具和系统提示词跟着换;没展开就一字不变
         fun refreshOffer() {
-            val offer = tools.offeredNow(listOfNotNull(batchSpec)).filter(::keep) + listOfNotNull(operationSpec)
+            val offer = tools.offeredNow(listOfNotNull(batchSpec)).filter(::keep)
             if (offer == specs) return
             specs = offer
-            caller.systemPrompt = SystemPrompt.assemble(basePrompt, tools.promptSections(specs) + operationPrompt)
+            caller.systemPrompt = SystemPrompt.assemble(basePrompt, tools.promptSections(specs))
             (tools.expanded - openGroups).forEach { emit(RunEvent.State(now(), "tools_opened", it)) }
             openGroups = tools.expanded
         }
@@ -474,7 +462,6 @@ class AgentLoop(
         // 除用户原话以外的上下文都经它生成:统一外壳、统一预算
         ctx = ContextBuilder(zone = zone)
         val installed = try { installedApps() } catch (e: CancellationException) { throw e } catch (e: Exception) { emptyList() }
-        decisionAppLabels = installed.toMap()
         val labels = installed.toMap()
         val matched = knowledge?.matchTask(task, Int.MAX_VALUE, installed).orEmpty()
         val index = if (skills != null && recommendSkills) GuideRecommender.index(skills, task) else null
@@ -567,9 +554,7 @@ class AgentLoop(
                 keepInterrupted(history, inbox, step)
                 continue
             }
-            var reply = routed.reply
-            var used = (routed as? com.wangzan101.mika.core.decision.StepProposal.Chat)?.model
-            var decisionStep = routed is com.wangzan101.mika.core.decision.StepProposal.Decision
+            var (reply, used) = routed
             val proposed = reply.parts.filterIsInstance<Part.ToolCall>().firstOrNull()
             if (provenance.origin == RunOrigin.Ui && intentGate != null && proposed != null &&
                 tools.verb(proposed.name).let { it !in DISCUSSION_LOOKUP_VERBS && it !in MEMORY_WRITE_VERBS }) {
@@ -582,25 +567,17 @@ class AgentLoop(
                     catch (e: CancellationException) { throw e }
                     catch (e: Exception) { return StopRules.modelFailed(e) }
                     used = caller.lastMainUsed
-                    decisionStep = false
                 }
-            }
-            if (decisionStep && !(routed as com.wangzan101.mika.core.decision.StepProposal.Decision).planned &&
-                intent != IntentGate.Intent.Read && intent != IntentGate.Intent.Act) {
-                // A navigation classifier cannot supply authorization, including non-UI tasks without IntentGate.
-                reply = caller.ask(history, specs, step, onText = previewFor(step))
-                used = caller.lastMainUsed
-                decisionStep = false
             }
             val rawText = reply.parts.filterIsInstance<Part.Text>().joinToString("") { it.text }.trim()
             val text = progressText(rawText)
             val cleanParts = cleanReplyParts(reply.parts, text)
-            history += Message(Role.Assistant, cleanParts, Author.Mika).also { message -> used?.let { caller.noteReply(message, it, reply.usage) } }
+            history += Message(Role.Assistant, cleanParts, Author.Mika).also { caller.noteReply(it, used, reply.usage) }
             val calls = reply.parts.filterIsInstance<Part.ToolCall>()
             note = text.ifEmpty { calls.firstOrNull()?.name ?: note }
             val tool = calls.firstOrNull()?.name
             val reason = calls.firstOrNull()?.let { tools.callReason(it.name, parseArgs(it.argsJson)) }
-            val retryWaitMs = if (decisionStep) 0L else caller.lastRetryWaitMs
+            val retryWaitMs = caller.lastRetryWaitMs
             val repliedAtMs = now()
             val latencyMs = repliedAtMs - asked - retryWaitMs
             // 随调用写的字是进度说明,界面上的实时那一行先用它
@@ -611,8 +588,7 @@ class AgentLoop(
             fun recordReply(argsJson: String?) = emit(RunEvent.ModelReply(
                 now(), step, RunEvent.clip(Redactor.text(text)), tool, argsJson,
                 reply.usage?.inputTokens, reply.usage?.outputTokens, reply.usage?.cachedInputTokens, latencyMs,
-                if (decisionStep) (routed as com.wangzan101.mika.core.decision.StepProposal.Decision).picked.model else if (caller.recordRoles) used?.name else null,
-                if (decisionStep) "decision" else if (caller.recordRoles) used?.let { caller.roleOf(it) } else null, retryWaitMs = retryWaitMs,
+                if (caller.recordRoles) used.name else null, if (caller.recordRoles) caller.roleOf(used) else null, retryWaitMs = retryWaitMs,
                 repliedAtMs = repliedAtMs,
             ))
 
@@ -675,31 +651,6 @@ class AgentLoop(
                 }
                 continue
             }
-            if (calls.firstOrNull()?.name == com.wangzan101.mika.core.decision.OperationPlanning.TOOL && operationSpec != null) {
-                val call = calls.first()
-                val outcome = runCatching {
-                    // Only the reasoning model can hand off a phase, never a selected operation or a lightweight reply.
-                    require(!decisionStep && used?.let { caller.roleOf(it) } == ModelCaller.ROLE_MAIN) { "planner_model_required" }
-                    operationSteps!!.install(call.argsJson, everything.map { it.name }.toSet() - call.name, latestWords, tools::decisionToken)
-                }
-                if (outcome.isFailure) { operationSteps?.reset(); forceMainAfterDecision = true }
-                val content = buildJsonObject {
-                    put("ok", outcome.isSuccess)
-                    if (outcome.isSuccess) put("message", if (operationSteps?.plan == null)
-                        "Execution phase released. No action was executed. Do the required reasoning or reading, then submit a new operation_plan for remaining UI execution."
-                        else if (operationSteps?.mode == com.wangzan101.mika.core.decision.FastMode.Shadow)
-                        "Shadow plan recorded; no action was executed. Continue issuing ordinary tools yourself. The fast actor only records suggestions."
-                        else "Execution phase accepted. Control returns here when evidence meets doneWhen or new reasoning is needed.")
-                    else put("error", "invalid_operation_plan")
-                }
-                history += Message(Role.Tool, calls.map { c -> Part.ToolResult(c.id,
-                    if (c == call) content.toString() else "{\"ok\":false,\"error\":\"parallel_tool_call_skipped\"}", c != call || outcome.isFailure) }, Author.Mika)
-                recordReply(null)
-                emit(RunEvent.State(now(), "operation_plan", if (outcome.isFailure) "invalid" else if (operationSteps?.plan == null) "released" else "accepted"))
-                recorder.result(step, call.name, null, content, JsonObject(emptyMap()), null, null, 0, "planner", call.id)
-                track.markRecovery()
-                continue
-            }
             emptyNudged = false
             leakNudged = false
             acted = true
@@ -729,7 +680,6 @@ class AgentLoop(
                 continue
             }
             if (flags.batchSteps && first.name == DO_STEPS_TOOL) {
-                operationSteps?.reset()
                 val end = batch(first, skipped, history, specs, guards, executor, track, step, note, tool, reason, narration, recordReply = ::recordReply,
                     app = { place = it }, steerWaiting = { inbox?.hasSteers() == true },
                     noteVerdicts = { s, sub, v ->
@@ -748,8 +698,7 @@ class AgentLoop(
             gateState = running
             var advice: String? = null
             var waitsForUser = false
-            val decisionProposal = routed as? com.wangzan101.mika.core.decision.StepProposal.Decision
-            val action = executor.run(first, if (decisionStep) Origin.Decision(step, decisionProposal!!.planned, decisionProposal.stateToken) else Origin.Model(step), object : FollowUp {
+            val action = executor.run(first, Origin.Model(step), object : FollowUp {
                 override suspend fun resolve(exec: ToolExecution): ToolExecution? {
                     var e = exec
                     (e.outcome as? Outcome.Confirm)?.let { e = user.confirm(it, step, running) }
@@ -794,23 +743,6 @@ class AgentLoop(
             val ran = when (action) {
                 is ActionOutcome.Cancelled -> return TaskState.Cancelled
                 is ActionOutcome.Refused -> {
-                    if (decisionStep) {
-                        // Some conservative refusals return before FollowUp; always balance the tool-call history.
-                        if (history.lastOrNull()?.role != Role.Tool) {
-                            history += Message(Role.Tool, listOf(Part.ToolResult(first.id, action.content.toString(), true)), Author.Mika)
-                            recordReply(Redactor.args(tools.verb(first.name), first.argsJson, secretField = true))
-                            recorder.result(step, first.name, verb, action.content, JsonObject(emptyMap()), null, null, 0, "decision", first.id)
-                        }
-                        emit(RunEvent.State(now(), "decision_fallback", action.code))
-                        if (action.code == "decision_screen_changed") operationSteps?.recover(action.code) else operationSteps?.reset()
-                        emit(RunEvent.State(now(), "decision_route", buildJsonObject {
-                            put("step", step); put("mode", operationSteps?.mode?.name?.lowercase() ?: "enabled")
-                            put("reason", action.code); put("planState", operationSteps?.planState ?: "needs_plan"); put("source", "model")
-                        }.toString()))
-                        forceMainAfterDecision = true
-                        continue
-                    }
-                    operationSteps?.reset()
                     guards.stop?.let {
                         recordReply(Redactor.args(tools.verb(first.name), first.argsJson, secretField = true))
                         return StopRules.guard(it)
@@ -833,7 +765,6 @@ class AgentLoop(
             if (noNewData) emit(RunEvent.State(now(), "no_new_data", NewDataTracker.LIMIT.toString()))
             if (verb == Verb.HandToUser && (args["reason"] as? JsonPrimitive)?.contentOrNull == PAYMENT) paymentHandedOver = true
             val isError = (exec.content["ok"] as? JsonPrimitive)?.booleanOrNull == false
-            operationSteps?.after(first.name, !isError, exec.changed, ran.verdicts.isNotEmpty() || advice != null || waitsForUser, byDecision = decisionStep)
             noteResultEvents(verb, exec.content)
             exec.place?.let { place = it }
             track.after(tools.verb(first.name), !isError, ran.verdicts.isNotEmpty() || advice != null, exec.changed, false, exec.place?.name)
@@ -960,11 +891,11 @@ class AgentLoop(
     private suspend fun routedOrRedirect(
         inbox: RunInbox?, history: List<Message>, specs: List<ToolSpec>, track: StepTrack, step: Int, restarted: (Long) -> Unit,
         onText: ((String) -> Unit)?,
-    ): com.wangzan101.mika.core.decision.StepProposal? {
-        if (inbox == null) return proposeStep(history, specs, track, step, restarted, onText)
+    ): Pair<ModelReply, ChatModel>? {
+        if (inbox == null) return caller.routed(history, specs, track, step, restarted, onText)
         return coroutineScope {
-            val pending = async { proposeStep(history, specs, track, step, restarted, onText) }
-            select<com.wangzan101.mika.core.decision.StepProposal?> {
+            val pending = async { caller.routed(history, specs, track, step, restarted, onText) }
+            select<Pair<ModelReply, ChatModel>?> {
                 pending.onAwait { it }
                 inbox.redirects.onReceive {
                     pending.cancelAndJoin()
@@ -972,86 +903,6 @@ class AgentLoop(
                 }
             }
         }
-    }
-
-    private var forceMainAfterDecision = false
-    private suspend fun proposeStep(history: List<Message>, specs: List<ToolSpec>, track: StepTrack, step: Int,
-        restarted: (Long) -> Unit, onText: ((String) -> Unit)?): com.wangzan101.mika.core.decision.StepProposal {
-        fun withNotice(notice: String?) = if (notice == null) history else history + Message(Role.User,
-            listOf(Part.Text("Mika execution handoff status:\n$notice")), Author.Mika)
-        if (forceMainAfterDecision) {
-            forceMainAfterDecision = false
-            return com.wangzan101.mika.core.decision.StepProposal.Chat(caller.ask(withNotice(operationSteps?.takePlannerNotice()), specs, step, onText = onText), caller.lastMainUsed)
-        }
-        val goal = latestWords
-        val operations = operationSteps
-        if (operations != null && operations.mode != com.wangzan101.mika.core.decision.FastMode.Off) {
-            operations.goalChanged(goal)
-            val phase = operations.plan
-            var routeReason = "needs_plan"
-            if (phase != null) {
-                val view = try { if (operations.planState == "recovering") null else tools.operationView(phase.surface, phase.texts) }
-                    catch (e: CancellationException) { throw e }
-                    catch (_: Exception) { null }
-                val label = (view?.get("currentApp") as? JsonPrimitive)?.content?.let(decisionAppLabels::get)
-                val state = if (view == null || label == null) view else JsonObject(view + ("currentAppName" to JsonPrimitive(label)))
-                val attempt = operations.propose(goal, state, tools.offeredNow(all = true).map { it.name }.toSet(), decisionAppLabels, step)
-                routeReason = attempt.reason
-                emit(RunEvent.State(now(), "decision_route", buildJsonObject {
-                    put("step", step); put("mode", operations.mode.name.lowercase()); put("reason", attempt.reason); put("planState", operations.planState)
-                    put("source", if (operations.mode == com.wangzan101.mika.core.decision.FastMode.Enabled && attempt.proposal != null) "jev" else "model")
-                    attempt.proposal?.picked?.let { put("operation", it.choiceId) }
-                }.toString()))
-                if (attempt.attempted) {
-                    emit(RunEvent.State(now(), "decision_step", buildJsonObject {
-                        put("reason", attempt.reason); put("mode", operations.mode.name)
-                        attempt.proposal?.picked?.let { put("choice", it.choiceId); put("model", it.model); put("elapsedMs", it.elapsedMs) }
-                    }.toString()))
-                    if (operations.mode == com.wangzan101.mika.core.decision.FastMode.Enabled && attempt.proposal != null) return attempt.proposal
-                    if (operations.mode == com.wangzan101.mika.core.decision.FastMode.Shadow) {
-                        val (reply, used) = caller.routed(withNotice(operations.takePlannerNotice()), specs, track, step, restarted, onText)
-                        return com.wangzan101.mika.core.decision.StepProposal.Chat(reply, used)
-                    }
-                }
-            }
-            if (phase == null) emit(RunEvent.State(now(), "decision_route", buildJsonObject {
-                put("step", step); put("mode", operations.mode.name.lowercase()); put("reason", routeReason)
-                put("planState", operations.planState); put("source", "model")
-            }.toString()))
-            val notice = operations.takePlannerNotice()
-            // Recovery/replanning goes directly to the reasoning model; ordinary non-actor work retains Mika's own routing.
-            if (notice != null) return com.wangzan101.mika.core.decision.StepProposal.Chat(caller.ask(withNotice(notice), specs, step, onText = onText), caller.lastMainUsed)
-            val (reply, used) = caller.routed(history, specs, track, step, restarted, onText)
-            return com.wangzan101.mika.core.decision.StepProposal.Chat(reply, used)
-        }
-        val fast = fastSteps
-        if (intentGate != null && provenance.origin == RunOrigin.Ui && fast != null && fast.mode != com.wangzan101.mika.core.decision.FastMode.Off &&
-            specs.any { it.name == "${tools.surface}_tap" } &&
-            com.wangzan101.mika.core.decision.FastStepCoordinator.supportsGoal(goal)) {
-            val view = try { tools.decisionView() }
-                catch (e: CancellationException) { throw e }
-                catch (_: Exception) { null }
-            if (view != null) {
-                val label = (view["currentApp"] as? JsonPrimitive)?.content?.let(decisionAppLabels::get)
-                val state = if (label == null) view else JsonObject(view + ("currentAppName" to JsonPrimitive(label)))
-                val attempt = fast.propose(goal, state, specs.map { it.name }.toSet(), step)
-                if (attempt.attempted) {
-                    emit(RunEvent.State(now(), "decision_step", buildJsonObject {
-                        put("reason", attempt.reason); put("mode", fast.mode.name)
-                        attempt.proposal?.picked?.let { put("choice", it.choiceId); put("model", it.model); put("elapsedMs", it.elapsedMs) }
-                    }.toString()))
-                    if (fast.mode == com.wangzan101.mika.core.decision.FastMode.Shadow) {
-                        val (reply, used) = caller.routed(history, specs, track, step, restarted, onText)
-                        return com.wangzan101.mika.core.decision.StepProposal.Chat(reply, used)
-                    }
-                    if (fast.mode == com.wangzan101.mika.core.decision.FastMode.Enabled && attempt.proposal != null) return attempt.proposal
-                    // Do not stack JEV, light and main calls on one step. Shadow still executes only chat proposals.
-                    return com.wangzan101.mika.core.decision.StepProposal.Chat(caller.ask(history, specs, step, onText = onText), caller.lastMainUsed)
-                }
-            }
-        }
-        val (reply, used) = caller.routed(history, specs, track, step, restarted, onText)
-        return com.wangzan101.mika.core.decision.StepProposal.Chat(reply, used)
     }
 
     /**
