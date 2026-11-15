@@ -26,7 +26,7 @@ data class CallConfig(
     val bypassIncomingNumbers: Set<String> = emptySet(),
     val autoAnswerPausedUntilMs: Long? = null,
     val activeVoiceProfileId: String = CallVoiceProfile.DEFAULT_ID,
-    /** Opt-in manual controls on the existing system Phone UI; never grants Telecom access. */
+    /** Runtime-only contextual manual session after verified companion refusal. Never persisted. */
     val nativePhoneCompatibility: Boolean = false,
     internal val backgroundStandbyAuthorized: Boolean = false,
 ) {

@@ -13,3 +13,10 @@ internal fun sameNativeCall(
 ): Boolean = oldWindow == window && oldPackage == pkg && abs(oldStart - start) < 2200 &&
     (oldNumber == null && number == null || oldNumber != null && number != null &&
         oldNumber == number)
+
+internal enum class NativeHandBackResult { NOT_ACTIVE, RESTORED, NEEDS_SYSTEM_CHECK }
+
+/** Stopping AI alone is not proof that the same native call is usable again. */
+internal fun nativeHandBackResult(sameCallVisible: Boolean, microphoneMuted: Boolean?): NativeHandBackResult =
+    if (sameCallVisible && microphoneMuted == false) NativeHandBackResult.RESTORED
+    else NativeHandBackResult.NEEDS_SYSTEM_CHECK

@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CallPolicyTest {
+    @Test fun officialAutomaticAnswerNeedsNoManualSessionButManualFallbackBlocksIt() {
+        val number = "+8613800138000"
+        val official = CallConfig(enabled = true, autoAnswer = true, credentialsConfigured = true,
+            audioVerified = true, allowedIncomingNumbers = setOf(number))
+        assertFalse(official.nativePhoneCompatibility)
+        assertTrue(CallPolicy.callerAllowed(official, number))
+        assertTrue(CallPolicy.canStartAutoAnswer(official, official, number, 100L))
+        val manual = official.copy(nativePhoneCompatibility = true)
+        assertFalse(CallPolicy.callerAllowed(manual, number))
+        assertFalse(CallPolicy.canStartAutoAnswer(official, manual, number, 100L))
+    }
+
     @Test fun blocksControlCodesAndNeverStripsDialingSyntax() {
         listOf("112", "911", "*#06#", "**21*123456789#", "123456789,22", "123456789;22", "tel:123456789",
             "123456789p1", "%2a123456789", "+1+5551234567").forEach {

@@ -15,6 +15,14 @@ class MikaLinksTest {
     private val device = MikaLinks.Device("Google", "Pixel 8", "14", 34, "0.1.0", "65fcf92")
 
     @Test
+    fun phonecompatKeepsItsExistingUpdateChannel() {
+        assertEquals("https://github.com/Zephyrxxx/Mika/releases", MikaLinks.RELEASES)
+        assertEquals("https://api.github.com/repos/Zephyrxxx/Mika/releases/latest", MikaLinks.LATEST_RELEASE_API)
+        // Repository attribution and bug reporting still belong to the upstream project.
+        assertEquals("https://github.com/wangzan101/Mika", MikaLinks.REPO)
+    }
+
+    @Test
     fun bodyHasThreePrefilledLines() {
         val lines = MikaLinks.issueBody(device).lines()
         assertEquals("- 机型：Google Pixel 8", lines[0])

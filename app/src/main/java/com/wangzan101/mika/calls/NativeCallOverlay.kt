@@ -32,6 +32,7 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
     private val phone = service.getSystemService(TelephonyManager::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var worker: Job? = null
+    private var handBackCompletion: CompletableDeferred<NativeHandBackResult>? = null
     private var owner: Screen? = null
     private var ownsMute = false
     private var mutedAtStart = false
@@ -49,7 +50,10 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
     private var lockedButton: OverlayWindow? = null
     private val lockedLabel = mutableStateOf("")
     private val toggleAction: () -> Unit = {
-        if (worker != null) {
+        if (!stockCallVisible()) {
+            // A stale capsule tap must not control a call on another screen.
+            Unit
+        } else if (worker != null) {
             status("正在交回…")
             worker?.cancel()
         } else if (ringing) answerRinging() else screen()?.let { begin(it) }
@@ -59,11 +63,12 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
     private val stockUi = setOf("com.android.incallui", "com.vivo.incallui", "com.bbk.incallui", "com.android.phone")
     private data class Screen(val window: Int, val pkg: String, val start: Long, val mute: AccessibilityNodeInfo, val number: String?)
 
-    internal suspend fun handBack(id: String): Boolean {
-        val active = worker ?: return false
-        if (current?.id != id) return false
+    internal suspend fun handBack(id: String): NativeHandBackResult {
+        val active = worker ?: return NativeHandBackResult.NOT_ACTIVE
+        if (current?.id != id) return NativeHandBackResult.NOT_ACTIVE
+        val completion = handBackCompletion
         active.cancelAndJoin()
-        return true
+        return if (completion?.isCompleted == true) completion.await() else NativeHandBackResult.NEEDS_SYSTEM_CHECK
     }
 
     fun start() {
@@ -73,6 +78,19 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
                     answerRequestedAt = null
                     finishCall(SystemClock.elapsedRealtime())
                     app.calls.clearStockDial()
+                    seenRinging = false
+                    wasOffHook = false
+                    ringing = false
+                    onScreen = false
+                    syncCapsule()
+                    delay(850)
+                    continue
+                }
+                // Do not monitor unattended/background native calls. Only expose manual controls
+                // while the user is viewing the system call UI in this explicitly chosen session.
+                if (!stockCallVisible()) {
+                    answerRequestedAt = null
+                    finishCall(SystemClock.elapsedRealtime())
                     seenRinging = false
                     wasOffHook = false
                     ringing = false
@@ -107,19 +125,12 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
                 ringing = isRinging && managed == true && current == null && !wasOffHook &&
                     audio.mode != AudioManager.MODE_IN_CALL && usesStockPhone()
                 if (s != null && current == null) {
-                    val pending = app.calls.stockDial
-                    val dial = pending?.takeIf { s.start - it.sentAt in -2000L..120_000L && !seenRinging &&
-                        s.number != null && android.telephony.PhoneNumberUtils.compare(s.number, it.number) }
-                    val direction = if (dial != null) CallDirection.OUTGOING else if (seenRinging) CallDirection.INCOMING else null
-                    current = NativeCallLog(s.start, System.currentTimeMillis() - (now - s.start),
-                        dial?.number ?: s.number, direction, dial)
-                    app.calls.clearStockDial()
-                    app.calls.stockState(current)
                     val answeredHere = answerRequestedAt?.let { sent ->
                         matchesAnsweredRing(sent, now, s.start, phoneState == TelephonyManager.CALL_STATE_OFFHOOK)
                     } == true
                     answerRequestedAt = null
-                    // Outgoing calls always wait for an explicit takeover button, even when dialed from Mika.
+                    // A connected call is not logged or taken over merely because it is visible.
+                    // Only a fresh explicit "AI answer" tap may continue into AI automatically.
                     if (answeredHere) begin(s)
                 }
                 val previous = current
@@ -132,7 +143,7 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
                     val pending = app.calls.stockDial
                     if (pending != null && now - pending.sentAt > 120_000L) app.calls.clearStockDial()
                 }
-                onScreen = s != null && !changedCall && current != null
+                onScreen = s != null && !changedCall
                 syncCapsule()
                 delay(if (ringing || answerRequestedAt != null || s != null || worker != null) 350 else 850)
             }
@@ -155,7 +166,7 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
             audio.mode == AudioManager.MODE_IN_CALL || !usesStockPhone() ||
             telecom?.isInManagedCall != true || callState() != TelephonyManager.CALL_STATE_RINGING) return
         if (service.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
-            notify("请在 Mika 的电话设置页兼容模式卡片点「来电悬浮接听」，允许接听权限")
+            notify("请在 Mika 电话设置的设备与权限中点「来电悬浮接听」，允许接听权限")
             return
         }
         if (!app.calls.state.value.serviceReady || !app.calls.state.value.deviceReady || app.phone.hub.shell.value == null) {
@@ -281,7 +292,15 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
 
     private fun begin(s: Screen) {
         if (worker != null) return
-        val log = current ?: return
+        if (!stockCallVisible()) return
+        val log = current ?: run {
+            val now = SystemClock.elapsedRealtime()
+            val dial = app.calls.stockDial?.takeIf { s.start - it.sentAt in -2000L..120_000L && !seenRinging &&
+                s.number != null && android.telephony.PhoneNumberUtils.compare(s.number, it.number) }
+            val direction = if (dial != null) CallDirection.OUTGOING else if (seenRinging) CallDirection.INCOMING else null
+            NativeCallLog(s.start, System.currentTimeMillis() - (now - s.start), dial?.number ?: s.number, direction, dial)
+                .also { current = it; app.calls.clearStockDial(); app.calls.stockState(it) }
+        }
         if (!usesStockPhone() || abs(log.start - s.start) >= 2200 ||
             (log.number != null && s.number != null && CallPolicy.incomingMatchKey(log.number) != CallPolicy.incomingMatchKey(s.number))) return
         log.attempted = true
@@ -289,6 +308,8 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
         mutedAtStart = audio.isMicrophoneMute
         ownsMute = false
         status("连接中 · 取消")
+        val completion = CompletableDeferred<NativeHandBackResult>()
+        handBackCompletion = completion
         val task = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 NativeCallAudio(app).run(
@@ -325,10 +346,14 @@ internal class NativeCallOverlay(private val service: ScreenAccessibility) {
                                 current!!.mute.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                                 withTimeoutOrNull(1500) { while (audio.isMicrophoneMute) delay(75) }
                             }
-                            if (audio.isMicrophoneMute && telecom?.isInManagedCall == true)
-                                notify("AI 已退出，请在系统电话中解除静音")
                         }
                     } finally {
+                        val restored = runCatching {
+                            nativeHandBackResult(same(screen(requireEnabled = false)), audio.isMicrophoneMute)
+                        }.getOrDefault(NativeHandBackResult.NEEDS_SYSTEM_CHECK)
+                        completion.complete(restored)
+                        if (restored != NativeHandBackResult.RESTORED)
+                            notify("AI 已停止，音频恢复尚未确认；请检查系统电话并按需解除静音")
                         if (current === log) {
                             log.switch(false, SystemClock.elapsedRealtime())
                             app.calls.stockState(log)

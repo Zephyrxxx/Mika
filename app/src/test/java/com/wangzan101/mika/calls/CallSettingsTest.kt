@@ -6,18 +6,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CallSettingsTest {
-    @Test fun nativeCompatibilityIsOptInAndPersistsWithoutChangingEnabledState() {
+    @Test fun fallbackIsSessionOnlyAndCannotBeEnabledThroughSavedPreferences() {
         val prefs = MemoryPrefs()
+        prefs.edit().putBoolean("native_phone_compatibility", true).commit()
         val settings = CallSettings(prefs)
         assertFalse(settings.state.value.nativePhoneCompatibility)
-        assertFalse(settings.state.value.enabled)
-
         settings.save(settings.state.value.copy(nativePhoneCompatibility = true))
-        val reopened = CallSettings(prefs)
-        assertTrue(reopened.state.value.nativePhoneCompatibility)
-        assertFalse(reopened.state.value.enabled)
-        reopened.save(reopened.state.value.copy(nativePhoneCompatibility = false))
+        assertFalse(settings.state.value.nativePhoneCompatibility)
+        settings.setManualFallbackSession(true)
+        assertTrue(settings.state.value.nativePhoneCompatibility)
         assertFalse(CallSettings(prefs).state.value.nativePhoneCompatibility)
+        settings.setManualFallbackSession(false)
+        assertFalse(settings.state.value.nativePhoneCompatibility)
     }
 
     @Test fun modeSwitchRevokesAutomaticAnswerAndStandbyAndDoesNotRestoreThem() {
@@ -29,7 +29,8 @@ class CallSettingsTest {
         assertTrue(automatic.autoAnswer)
         assertTrue(settings.authorizeBackgroundStandby())
 
-        val native = settings.save(settings.state.value.copy(nativePhoneCompatibility = true))
+        settings.setManualFallbackSession(true)
+        val native = settings.save(settings.state.value)
         assertTrue(native.enabled)
         assertFalse(native.autoAnswer)
         assertFalse(native.backgroundStandbyAuthorized)
@@ -38,7 +39,8 @@ class CallSettingsTest {
         assertFalse(prefs.getBoolean("auto_answer", true))
         assertFalse(prefs.getBoolean(CallSettings.BACKGROUND_AUTHORIZED, true))
 
-        val ordinary = settings.save(native.copy(nativePhoneCompatibility = false))
+        settings.setManualFallbackSession(false)
+        val ordinary = settings.state.value
         assertFalse(ordinary.autoAnswer)
         assertFalse(ordinary.backgroundStandbyAuthorized)
         assertFalse(ordinary.audioVerified)
@@ -47,7 +49,8 @@ class CallSettingsTest {
     @Test fun verifiedCompatibilityCannotEnableAutomaticAnswerOrStandby() {
         val prefs = MemoryPrefs()
         val settings = CallSettings(prefs)
-        settings.save(settings.state.value.copy(enabled = true, nativePhoneCompatibility = true))
+        settings.save(settings.state.value.copy(enabled = true))
+        settings.setManualFallbackSession(true)
         val verified = settings.save(settings.state.value.copy(
             audioVerified = true, credentialsConfigured = true, autoAnswer = true,
             backgroundStandbyAuthorized = true,
@@ -57,13 +60,7 @@ class CallSettingsTest {
         assertFalse(verified.backgroundStandbyAuthorized)
         assertFalse(settings.authorizeBackgroundStandby())
 
-        // A legacy or externally inconsistent preference must not revive standby on restart.
-        prefs.edit().putBoolean("auto_answer", true)
-            .putBoolean(CallSettings.BACKGROUND_AUTHORIZED, true).commit()
-        val reopened = CallSettings(prefs).state.value
-        assertTrue(reopened.nativePhoneCompatibility)
-        assertFalse(reopened.autoAnswer)
-        assertFalse(reopened.backgroundStandbyAuthorized)
+        assertFalse(CallSettings(prefs).state.value.nativePhoneCompatibility)
     }
 
     @Test fun policyRejectsAutomaticAnswerEvenForAnUnnormalisedCompatibilityConfig() {
@@ -73,4 +70,45 @@ class CallSettingsTest {
         assertFalse(CallPolicy.callerAllowed(config, null))
         assertTrue(CallPolicy.callerAllowed(config.copy(nativePhoneCompatibility = false), "+8613812345678"))
     }
+    @Test fun officialVerifiedAllowlistedIncomingStillStartsAutomaticAiWithoutManualConsent() {
+        val number = "+8613812345678"
+        val ready = CallConfig(enabled = true, autoAnswer = true, audioVerified = true,
+            credentialsConfigured = true, allowedIncomingNumbers = setOf(number))
+        assertTrue(CallPolicy.canStartAutoAnswer(ready, ready, number, 100L))
+        assertFalse(CallPolicy.canStartAutoAnswer(ready, ready.copy(nativePhoneCompatibility = true), number, 100L))
+        assertFalse(CallPolicy.canStartAutoAnswer(ready, ready.copy(audioVerified = false), number, 100L))
+        assertFalse(CallPolicy.canStartAutoAnswer(ready, ready, "+8613912345678", 100L))
+    }
+
+    @Test fun enteringManualSessionDurablyRevokesAutomaticConsentBeforeAnyOtherSave() {
+        val prefs = MemoryPrefs()
+        val settings = CallSettings(prefs)
+        settings.save(settings.state.value.copy(enabled = true, autoAnswer = true,
+            audioVerified = true, credentialsConfigured = true))
+        assertTrue(settings.authorizeBackgroundStandby())
+        assertTrue(settings.setManualFallbackSession(true))
+        val restarted = CallSettings(prefs).state.value
+        assertFalse(restarted.nativePhoneCompatibility)
+        assertFalse(restarted.autoAnswer)
+        assertFalse(restarted.backgroundStandbyAuthorized)
+        assertFalse(restarted.audioVerified)
+    }
+
+    @Test fun failedConsentRevocationNeverActivatesManualSession() {
+        val backing = MemoryPrefs()
+        val prefs = object : android.content.SharedPreferences by backing {
+            override fun edit(): android.content.SharedPreferences.Editor {
+                val editor = backing.edit()
+                return object : android.content.SharedPreferences.Editor by editor {
+                    override fun commit(): Boolean = false
+                }
+            }
+        }
+        val settings = CallSettings(prefs)
+        assertFalse(settings.setManualFallbackSession(true))
+        assertFalse(settings.state.value.nativePhoneCompatibility)
+        assertFalse(settings.state.value.autoAnswer)
+        assertFalse(settings.state.value.backgroundStandbyAuthorized)
+    }
+
 }

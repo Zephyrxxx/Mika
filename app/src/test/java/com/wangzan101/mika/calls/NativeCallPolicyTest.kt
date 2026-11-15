@@ -27,4 +27,10 @@ class NativeCallPolicyTest {
         assertTrue(sameNativeCall(1, "phone", 10_000, null, 1, "phone", 10_500, null))
         assertFalse(sameNativeCall(1, "phone", 10_000, null, 1, "phone", 10_500, "1234567"))
     }
+    @Test fun handbackRequiresConfirmedSameCallAndUnmutedMicrophone() {
+        org.junit.Assert.assertEquals(NativeHandBackResult.RESTORED, nativeHandBackResult(true, false))
+        org.junit.Assert.assertEquals(NativeHandBackResult.NEEDS_SYSTEM_CHECK, nativeHandBackResult(true, true))
+        org.junit.Assert.assertEquals(NativeHandBackResult.NEEDS_SYSTEM_CHECK, nativeHandBackResult(true, null))
+        org.junit.Assert.assertEquals(NativeHandBackResult.NEEDS_SYSTEM_CHECK, nativeHandBackResult(false, false))
+    }
 }

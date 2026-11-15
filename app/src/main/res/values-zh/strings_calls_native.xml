@@ -1,11 +1,12 @@
 <resources>
-    <string name="calls_native_title">系统电话兼容模式（手动启用）</string>
-    <string name="calls_native_note">保留系统默认电话应用。开启无障碍并连接内置助手后，在系统通话界面手动选择 AI 接管或交回本人。此模式不授予通话管理权限，也不会自动接听。切换模式会清除音频验证和自动待命授权。</string>
+    <string name="calls_native_title">本次改用系统电话手动接管</string>
+    <string name="calls_native_note">系统已明确拒绝通话管理权限。可保留原生电话界面，授权所需权限后，手动接听并选择 AI 接管或交回。此选择仅在本次会话有效，不开启自动接听，也不代表伴生通话已就绪。</string>
     <string name="calls_native_manual_only">兼容模式：请点本次通话的悬浮按钮。自动接听不可用。</string>
     <string name="calls_native_answer_permission">来电悬浮接听</string>
     <string name="calls_native_answer_granted">已授权。每次响铃仍需你手动点击。</string>
     <string name="calls_native_answer_note">点击授权接听来电。此权限可选：不授权时，先用系统电话接听，再选择 AI 接管。</string>
     <string name="calls_native_accessibility">系统通话控件的无障碍访问</string>
     <string name="calls_native_accessibility_note">打开系统无障碍设置，自行选择是否启用 Mika。用于显示控件并读回当前通话和静音状态。</string>
-    <string name="calls_native_saved">已保存通话兼容设置；请检查权限和音频状态。</string>
+    <string name="calls_native_saved">已选择本次手动接管；请检查权限和音频状态。</string>
+    <string name="calls_native_cancel">结束本次手动接管</string>
 </resources>

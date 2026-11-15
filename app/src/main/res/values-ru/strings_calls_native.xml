@@ -1,11 +1,12 @@
 <resources>
-    <string name="calls_native_title">System Phone compatibility (opt in)</string>
-    <string name="calls_native_note">Keep the system Phone app as default. With accessibility and the connected helper, manually choose AI control or return to yourself on the system call screen. This does not grant call-management permission and does not auto-answer. Changing modes clears audio verification and automatic standby consent.</string>
+    <string name="calls_native_title">Use manual system Phone control for this session</string>
+    <string name="calls_native_note">The system refused call-management access. Keep the system Phone UI and explicitly choose manual answering, AI control or handback after granting the required permissions. This session-only fallback does not enable auto-answer or mark companion access ready.</string>
     <string name="calls_native_manual_only">Compatibility mode: tap the floating button for this call. Automatic answering is unavailable.</string>
     <string name="calls_native_answer_permission">Answer a ringing call from the floating button</string>
     <string name="calls_native_answer_granted">Allowed. Each ringing call still requires your tap.</string>
     <string name="calls_native_answer_note">Tap to allow answering calls. This is optional: without it, answer in the system Phone app first, then choose AI control.</string>
     <string name="calls_native_accessibility">Accessibility for system call controls</string>
     <string name="calls_native_accessibility_note">Open system accessibility settings and choose whether to enable Mika. Required to show the control and read back the current call and mute state.</string>
-    <string name="calls_native_saved">Call compatibility settings saved. Check permissions and audio readiness.</string>
+    <string name="calls_native_saved">Manual control selected for this session. Check permissions and audio readiness.</string>
+    <string name="calls_native_cancel">End manual control session</string>
 </resources>
