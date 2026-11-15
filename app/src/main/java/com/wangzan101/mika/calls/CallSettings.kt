@@ -13,13 +13,17 @@ import kotlinx.coroutines.flow.asStateFlow
 class CallSettings(
     private val prefs: SharedPreferences,
     private val cipher: KeyCipher = KeystoreKeyCipher("mika-volc-realtime-calls"),
+    private val verificationScope: String? = null,
+    private val fingerprint: String = Build.FINGERPRINT ?: "unknown",
 ) {
+    private val verificationMigration = CallVerificationMigration(prefs, verificationScope)
     private val mutable = MutableStateFlow(read())
     val state = mutable.asStateFlow()
     internal val credentialsRevision = MutableStateFlow(0L)
 
     @Synchronized
     fun save(config: CallConfig): CallConfig {
+        check(verificationMigration.ensure()) { "无法保存升级后的电话安全状态，请重试" }
         val defaults = CallConfig()
         val previous = mutable.value
         require(config.defaultOutgoingSimId == null || CallPolicy.isRememberedSimId(config.defaultOutgoingSimId)) {
@@ -72,7 +76,9 @@ class CallSettings(
             .putLong("auto_answer_paused_until_ms", next.autoAnswerPausedUntilMs ?: 0L)
             .putInt("max_seconds", next.maxCallSeconds)
             .putString("audio_mode", next.audioMode.name)
-            .putString("audio_verified_build", Build.FINGERPRINT.takeIf { next.audioVerified })
+            .putString("audio_verified_build", fingerprint.takeIf { next.audioVerified })
+            .putString(CallVerificationCompatibility.CODE_PATH, verificationScope.takeIf { next.audioVerified })
+            .putString(CallVerificationCompatibility.MIGRATED_PATH, verificationScope)
             .putString("greeting", next.greeting)
             .putString("prompt", next.systemPrompt)
             .putString("speaker", next.speaker)
@@ -171,7 +177,9 @@ class CallSettings(
         val defaults = CallConfig()
         val enabled = prefs.getBoolean("enabled", false)
         val nativeCompatibility = false // A manual fallback is never restored across process starts.
-        val verified = prefs.getString("audio_verified_build", null)?.let { it == Build.FINGERPRINT } == true
+        val migrated = verificationMigration.ensure()
+        val verified = migrated && prefs.getString("audio_verified_build", null) == fingerprint &&
+            (verificationScope == null || prefs.getString(CallVerificationCompatibility.CODE_PATH, null) == verificationScope)
         CallConfig(
             enabled = enabled,
             nativePhoneCompatibility = nativeCompatibility,
@@ -209,6 +217,7 @@ class CallSettings(
         internal const val BACKGROUND_AUTHORIZED = "background_standby_authorized"
 
         fun create(context: Context): CallSettings =
-            CallSettings(context.getSharedPreferences("mika_call_settings", Context.MODE_PRIVATE))
+            CallSettings(context.getSharedPreferences("mika_call_settings", Context.MODE_PRIVATE),
+                verificationScope = CallVerificationCompatibility.scopeForPackage(context.packageName))
     }
 }
