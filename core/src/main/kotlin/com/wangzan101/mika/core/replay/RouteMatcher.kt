@@ -9,11 +9,6 @@ import com.wangzan101.mika.core.model.Role
 import com.wangzan101.mika.core.prompt.Prompts
 import com.wangzan101.mika.core.decision.DecisionModel
 import com.wangzan101.mika.core.decision.DecisionPolicy
-import com.wangzan101.mika.core.decision.DecisionPort
-import com.wangzan101.mika.core.decision.ChoiceAttempt
-import com.wangzan101.mika.core.decision.ChoiceInput
-import com.wangzan101.mika.core.decision.attempt
-import com.wangzan101.mika.core.record.Redactor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -39,7 +34,6 @@ class RouteMatcher(
     private val knowledge: KnowledgeStore?,
     private val decision: DecisionModel? = null,
     private val onDecision: (String) -> Unit = {},
-    private val decisionPort: DecisionPort? = null,
 ) {
 
     fun candidates(goal: String, limit: Int = 5): List<Route> {
@@ -56,7 +50,7 @@ class RouteMatcher(
     suspend fun choose(goal: String): RouteChoice? {
         val list = candidates(goal)
         if (list.isEmpty()) return null
-        if (decisionPort != null || decision != null) {
+        if (decision != null) {
             // 只把参数可由原话唯一确定的路线交给决策模型,不用它生成文字。
             // 歧义模板、无匹配、服务失败或不确定均保留原模型抽取和原来的严格校验。
             val choices = list.mapNotNull { route -> RouteSlots.extract(route, goal)?.let { validated(route, it, goal) } }
@@ -64,53 +58,37 @@ class RouteMatcher(
                 val routesById = choices.mapIndexed { i, c -> "route_$i" to c }.toMap()
                 val options = routesById.mapValues { it.value.route.template } +
                     ("skip" to "Do not reuse a route; let the main model plan this request.")
-                val state = buildJsonObject {
-                    put("currentRequest", goal)
-                    put("routes", buildJsonObject {
-                        routesById.forEach { (id, c) -> put(id, buildJsonObject {
-                            put("template", c.route.template)
-                            put("boundParameters", JsonArray(c.slots.map(::JsonPrimitive)))
-                            put("tools", JsonArray(c.route.steps.map { JsonPrimitive(it.tool) }))
-                        }) }
-                    })
+                val picked = try {
+                    withTimeoutOrNull(10_000L) {
+                        decision.choose(buildJsonObject {
+                            put("currentRequest", goal)
+                            put("routes", buildJsonObject {
+                                routesById.forEach { (id, c) -> put(id, buildJsonObject {
+                                    put("template", c.route.template)
+                                    put("boundParameters", JsonArray(c.slots.map(::JsonPrimitive)))
+                                    put("tools", JsonArray(c.route.steps.map { JsonPrimitive(it.tool) }))
+                                }) }
+                            })
+                        }, Prompts.role("route_decision"), options,
+                            "Does at least one supplied route fulfill the entire currentRequest without adding an action, dropping a constraint, or changing its meaning?")
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
                 }
-                val applicability = "Does at least one supplied route fulfill the entire currentRequest without adding an action, dropping a constraint, or changing its meaning?"
-                if (decisionPort != null) {
-                    val picked = decisionPort.attempt(ChoiceInput("route", Redactor.text(state.toString()),
-                        Prompts.role("route_decision"), options, "route-v1", applicability))
-                    val id = (picked as? ChoiceAttempt.Pick)?.choiceId
-                    if (id == "skip") {
-                        onDecision("skipped")
-                        return null
-                    }
-                    routesById[id]?.let {
-                        onDecision("selected")
-                        return it
-                    }
-                    onDecision("fallback")
-                } else {
-                    val picked = try {
-                        withTimeoutOrNull(10_000L) {
-                            decision!!.choose(state, Prompts.role("route_decision"), options, applicability)
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        null
-                    }
-                    val confident = picked != null && picked.probability.isFinite() &&
-                        picked.probability in DecisionPolicy.MIN_PROBABILITY..1.0
-                    if (confident && picked?.choice == "skip") {
-                        onDecision("skipped")
-                        return null
-                    }
-                    if (confident && picked != null && picked.choice in routesById &&
-                        picked.applicable?.let { it.isFinite() && it in DecisionPolicy.MIN_APPLICABLE..1.0 } == true) {
-                        onDecision("selected")
-                        return routesById.getValue(picked.choice)
-                    }
-                    onDecision("fallback")
+                val confident = picked != null && picked.probability.isFinite() &&
+                    picked.probability in DecisionPolicy.MIN_PROBABILITY..1.0
+                if (confident && picked?.choice == "skip") {
+                    onDecision("skipped")
+                    return null
                 }
+                if (confident && picked != null && picked.choice in routesById &&
+                    picked.applicable?.let { it.isFinite() && it in DecisionPolicy.MIN_APPLICABLE..1.0 } == true) {
+                    onDecision("selected")
+                    return routesById.getValue(picked.choice)
+                }
+                onDecision("fallback")
             }
         }
         val text = list.withIndex().joinToString("\n", "用户原话:$goal\n\n做法模板:\n") { (i, r) -> "${i + 1}. ${r.template}" }

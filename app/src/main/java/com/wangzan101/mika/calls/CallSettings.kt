@@ -13,13 +13,17 @@ import kotlinx.coroutines.flow.asStateFlow
 class CallSettings(
     private val prefs: SharedPreferences,
     private val cipher: KeyCipher = KeystoreKeyCipher("mika-volc-realtime-calls"),
+    private val verificationScope: String? = null,
+    private val fingerprint: String = Build.FINGERPRINT ?: "unknown",
 ) {
+    private val verificationMigration = CallVerificationMigration(prefs, verificationScope)
     private val mutable = MutableStateFlow(read())
     val state = mutable.asStateFlow()
     internal val credentialsRevision = MutableStateFlow(0L)
 
     @Synchronized
     fun save(config: CallConfig): CallConfig {
+        check(verificationMigration.ensure()) { "无法保存升级后的电话安全状态，请重试" }
         val defaults = CallConfig()
         val previous = mutable.value
         require(config.defaultOutgoingSimId == null || CallPolicy.isRememberedSimId(config.defaultOutgoingSimId)) {
@@ -42,12 +46,13 @@ class CallSettings(
         }
         val audioVerified = config.audioVerified && config.audioMode == previous.audioMode
         val next = config.copy(
+            nativePhoneCompatibility = previous.nativePhoneCompatibility,
             allowedIncomingNumbers = numbers,
             bypassIncomingNumbers = bypass,
             autoAnswerPausedUntilMs = config.autoAnswerPausedUntilMs?.takeIf { it > System.currentTimeMillis() },
             audioVerified = audioVerified,
-            autoAnswer = config.enabled && audioVerified && config.autoAnswer,
-            backgroundStandbyAuthorized = previous.backgroundStandbyAuthorized && config.enabled && audioVerified && config.autoAnswer,
+            autoAnswer = !previous.nativePhoneCompatibility && config.enabled && audioVerified && config.autoAnswer,
+            backgroundStandbyAuthorized = !previous.nativePhoneCompatibility && previous.backgroundStandbyAuthorized && config.enabled && audioVerified && config.autoAnswer,
             autoAnswerDelaySeconds = config.autoAnswerDelaySeconds.coerceIn(
                 CallConfig.MIN_AUTO_ANSWER_DELAY_SECONDS, CallConfig.MAX_AUTO_ANSWER_DELAY_SECONDS,
             ),
@@ -59,6 +64,7 @@ class CallSettings(
         )
         val committed = prefs.edit()
             .putBoolean("enabled", next.enabled)
+            .remove("native_phone_compatibility")
             .putBoolean("summary_enabled", next.summaryEnabled)
             .putBoolean("auto_answer", next.autoAnswer)
             .putBoolean(BACKGROUND_AUTHORIZED, next.backgroundStandbyAuthorized)
@@ -70,7 +76,9 @@ class CallSettings(
             .putLong("auto_answer_paused_until_ms", next.autoAnswerPausedUntilMs ?: 0L)
             .putInt("max_seconds", next.maxCallSeconds)
             .putString("audio_mode", next.audioMode.name)
-            .putString("audio_verified_build", Build.FINGERPRINT.takeIf { next.audioVerified })
+            .putString("audio_verified_build", fingerprint.takeIf { next.audioVerified })
+            .putString(CallVerificationCompatibility.CODE_PATH, verificationScope.takeIf { next.audioVerified })
+            .putString(CallVerificationCompatibility.MIGRATED_PATH, verificationScope)
             .putString("greeting", next.greeting)
             .putString("prompt", next.systemPrompt)
             .putString("speaker", next.speaker)
@@ -82,11 +90,35 @@ class CallSettings(
         return next
     }
 
+    /** Transient, explicit runtime session consent; never a saved preference. */
+    @Synchronized
+    internal fun setManualFallbackSession(active: Boolean): Boolean {
+        val previous = mutable.value
+        if (previous.nativePhoneCompatibility == active) return true
+        if (active) {
+            // Revoke durable unattended-call consent before enabling the transient manual path.
+            // A process death immediately after this action must not restore automatic answering.
+            val edit = prefs.edit()
+            edit.putBoolean("auto_answer", false)
+                .putBoolean(BACKGROUND_AUTHORIZED, false)
+                .remove("audio_verified_build")
+                .remove("native_phone_compatibility")
+            if (!edit.commit()) {
+                mutable.value = previous.copy(nativePhoneCompatibility = false, autoAnswer = false,
+                    backgroundStandbyAuthorized = false, audioVerified = false)
+                return false
+            }
+        }
+        mutable.value = previous.copy(nativePhoneCompatibility = active, autoAnswer = false,
+            backgroundStandbyAuthorized = false, audioVerified = false)
+        return true
+    }
+
     /** Called only by the foreground standby action. A live service is checked separately. */
     @Synchronized
     internal fun authorizeBackgroundStandby(): Boolean {
         val config = mutable.value
-        if (!config.enabled || !config.autoAnswer || !config.audioVerified || !config.credentialsConfigured) return false
+        if (config.nativePhoneCompatibility || !config.enabled || !config.autoAnswer || !config.audioVerified || !config.credentialsConfigured) return false
         if (config.backgroundStandbyAuthorized) return true
         if (!prefs.edit().putBoolean(BACKGROUND_AUTHORIZED, true).commit()) return false
         mutable.value = config.copy(backgroundStandbyAuthorized = true)
@@ -144,11 +176,15 @@ class CallSettings(
     private fun read(): CallConfig = runCatching {
         val defaults = CallConfig()
         val enabled = prefs.getBoolean("enabled", false)
-        val verified = prefs.getString("audio_verified_build", null)?.let { it == Build.FINGERPRINT } == true
+        val nativeCompatibility = false // A manual fallback is never restored across process starts.
+        val migrated = verificationMigration.ensure()
+        val verified = migrated && prefs.getString("audio_verified_build", null) == fingerprint &&
+            (verificationScope == null || prefs.getString(CallVerificationCompatibility.CODE_PATH, null) == verificationScope)
         CallConfig(
             enabled = enabled,
-            autoAnswer = enabled && verified && prefs.getBoolean("auto_answer", false),
-            backgroundStandbyAuthorized = enabled && verified && prefs.getBoolean("auto_answer", false) &&
+            nativePhoneCompatibility = nativeCompatibility,
+            autoAnswer = !nativeCompatibility && enabled && verified && prefs.getBoolean("auto_answer", false),
+            backgroundStandbyAuthorized = !nativeCompatibility && enabled && verified && prefs.getBoolean("auto_answer", false) &&
                 prefs.getBoolean(BACKGROUND_AUTHORIZED, false),
             autoAnswerDelaySeconds = prefs.getInt("auto_answer_delay_seconds", defaults.autoAnswerDelaySeconds)
                 .coerceIn(CallConfig.MIN_AUTO_ANSWER_DELAY_SECONDS, CallConfig.MAX_AUTO_ANSWER_DELAY_SECONDS),
@@ -181,6 +217,7 @@ class CallSettings(
         internal const val BACKGROUND_AUTHORIZED = "background_standby_authorized"
 
         fun create(context: Context): CallSettings =
-            CallSettings(context.getSharedPreferences("mika_call_settings", Context.MODE_PRIVATE))
+            CallSettings(context.getSharedPreferences("mika_call_settings", Context.MODE_PRIVATE),
+                verificationScope = CallVerificationCompatibility.scopeForPackage(context.packageName))
     }
 }

@@ -1,11 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="calls_stock_ring_title">Answer with the floating AI button</string>
-    <string name="calls_stock_ring_permission">Tap to allow answering calls with the system Phone app.</string>
-    <string name="calls_stock_ring_hint">When your phone rings, tap AI Answer on the floating bar.</string>
-    <string name="calls_auto_setup_after_call">You can enable auto-answer once this call ends.</string>
-    <string name="calls_auto_choose_dialer">Tap to choose Mika as your default phone app for auto-answer.</string>
-    <string name="calls_auto_open_setup">Tap to finish setting up AI calls and verifying call audio.</string>
     <string name="calls_device_allow_notifications">Allow notifications</string>
     <string name="calls_device_allow_phone">Allow phone permissions</string>
     <string name="calls_device_helper">Built-in helper</string>

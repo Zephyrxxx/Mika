@@ -12,19 +12,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import com.wangzan101.mika.core.decision.ChoiceAttempt
-import com.wangzan101.mika.core.decision.ChoiceInput
-import com.wangzan101.mika.core.decision.DecisionPort
-import com.wangzan101.mika.core.decision.DecisionQuestions
-import com.wangzan101.mika.core.decision.attempt
-import com.wangzan101.mika.core.record.Redactor
 
 /** 只在准备调用本轮第一个工具时，独立判断用户是在讨论，还是要读取或操作。 */
 internal class IntentGate(
     private val judge: ChatModel,
     private val fallback: ChatModel? = null,
     private val decision: DecisionModel? = null,
-    private val decisionPort: DecisionPort? = null,
     private val onDecision: (String) -> Unit = {},
 ) {
     enum class Intent { Discuss, Read, Act }
@@ -32,7 +25,7 @@ internal class IntentGate(
     suspend fun assess(task: String, priorTurns: List<Turn>): Intent? {
         val prior = Conversation.context(priorTurns, maxTurns = 3, maxTokens = 800)
             ?.parts?.filterIsInstance<Part.Text>()?.joinToString("\n") { it.text }.orEmpty()
-        if (decisionPort == null && decision != null) {
+        if (decision != null) {
             val picked = try {
                 withTimeoutOrNull(DECISION_TIMEOUT_MS) {
                     decision.choose(buildJsonObject {
@@ -53,13 +46,6 @@ internal class IntentGate(
         val input = buildString {
             if (prior.isNotEmpty()) appendLine(prior).appendLine()
             append("The user's current message:\n").append(task)
-        }
-        if (decisionPort != null) {
-            val picked = decisionPort.attempt(ChoiceInput("intent", Redactor.text(input),
-                DecisionQuestions.INTENT, DecisionQuestions.intentChoices, "intent-v1"))
-            val intent = (picked as? ChoiceAttempt.Pick)?.choiceId?.let(::parse)
-            onDecision(intent?.let { "selected:${it.name}" } ?: "fallback")
-            if (intent != null) return intent
         }
         val messages = listOf(Message(Role.User, listOf(Part.Text(input)), Author.User))
         for (candidate in listOfNotNull(judge, fallback)) {

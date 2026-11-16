@@ -15,7 +15,7 @@ class ApkIntegrityTest {
 
     @Test fun rejectsUntrustedDownloads() {
         for (url in listOf(
-            "https://github.com/wangzan101/Mika/releases/download/v1.0.620/Mika.apk",
+            "https://github.com/wangzan101/Mika/releases/download/v0.2.0/Mika.apk",
             "http://github.com/Zephyrxxx/Mika/releases/download/v0.2.0/Mika.apk",
             "https://github.com.evil.test/Zephyrxxx/Mika/releases/download/v0.2.0/Mika.apk",
             "https://github.com/other/Mika/releases/download/v0.2.0/Mika.apk",

@@ -1,11 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="calls_stock_ring_title">Ответить с помощью плавающей кнопки ИИ</string>
-    <string name="calls_stock_ring_permission">Нажмите, чтобы разрешить Mika отвечать через системное приложение телефона.</string>
-    <string name="calls_stock_ring_hint">Когда телефон зазвонит, нажмите кнопку ответа на плавающей панели.</string>
-    <string name="calls_auto_setup_after_call">Автоответ можно включить после завершения этого вызова.</string>
-    <string name="calls_auto_choose_dialer">Нажмите, чтобы выбрать Mika приложением телефона по умолчанию для автоответа.</string>
-    <string name="calls_auto_open_setup">Нажмите, чтобы завершить настройку звонков с ИИ и проверить звук.</string>
     <string name="calls_device_allow_notifications">Разрешить уведомления</string>
     <string name="calls_device_allow_phone">Разрешить доступ к телефону</string>
     <string name="calls_device_helper">Встроенный помощник</string>

@@ -56,6 +56,7 @@ class CallVoiceProfileStore internal constructor(
     private val backend: CallVoiceProfileBackend,
     private val cipher: KeyCipher? = null,
     private val newId: () -> String = { UUID.randomUUID().toString() },
+    private val verificationScope: String? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private var stored = StoredVoiceProfiles()
@@ -216,7 +217,9 @@ class CallVoiceProfileStore internal constructor(
         require(profile.speaker.length <= CallPolicy.MAX_SPEAKER_CHARS && profile.speaker.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it in "_-" }) { "声音编号无效" }
     }
 
-    private fun verificationKey(mode: CallAudioMode, fingerprint: String) = "${mode.name}:$fingerprint"
+    // Legacy evidence stays stored but cannot authorize the different clean-fork audio path.
+    private fun verificationKey(mode: CallAudioMode, fingerprint: String): String =
+        (verificationScope?.let { "$it:" } ?: "") + "${mode.name}:$fingerprint"
 
     companion object {
         private const val MAX_STORAGE_CHARS = 500_000
@@ -226,7 +229,7 @@ class CallVoiceProfileStore internal constructor(
             return CallVoiceProfileStore(object : CallVoiceProfileBackend {
                 override fun read(): String? = prefs.getString("encrypted_profiles_v1", null)
                 override fun write(value: String): Boolean = prefs.edit().putString("encrypted_profiles_v1", value).commit()
-            }, cipher)
+            }, cipher, verificationScope = CallVerificationCompatibility.scopeForPackage(context.packageName))
         }
     }
 }

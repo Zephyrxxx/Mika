@@ -7,28 +7,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CallTaskBriefTest {
-    @Test fun aRingTapOnlyHandsOffAFreshConnectedCall() {
-        assertTrue(matchesAnsweredRing(20_000, 23_000, 19_800, true))
-        assertFalse(matchesAnsweredRing(20_000, 23_000, 19_800, false))
-        assertFalse(matchesAnsweredRing(20_000, 30_000, 29_000, true))
-        assertFalse(matchesAnsweredRing(20_000, 23_000, 10_000, true))
-        assertFalse(matchesAnsweredRing(20_000, 23_000, 24_000, true))
-    }
-
-    @Test fun stockCallsSendSavedInstructionsEvenWhenTheDialerDoesNotReportDirection() {
-        val custom = "先询问对方希望怎样称呼。"
-        val rules = "快递请放前台。"
-        for (direction in listOf(CallDirection.INCOMING, CallDirection.OUTGOING, null)) {
-            val wire = sessionInstructions(CallPolicy.prompt(custom, direction, rules))
-            assertTrue(wire.contains(custom))
-            assertTrue(wire.contains(rules))
-            if (direction == null) {
-                assertTrue(wire.contains("拨打方向未确认"))
-                assertFalse(wire.contains("仅代接电话"))
-            }
-        }
-    }
-
     @Test fun validatesAllBoundariesBeforeDial() {
         val max = CallTaskBrief(
             "目".repeat(400), List(8) { "问".repeat(200) }, "背".repeat(1_000), "界".repeat(600),

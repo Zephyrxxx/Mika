@@ -30,7 +30,8 @@ open class ScreenAccessibility : AccessibilityService() {
     private class DisplayEvent(val displayId: Int, val event: AccessibilityEvent)
 
 
-    internal suspend fun handBackCall(id: String) = callOverlay?.handBack(id) == true
+    internal suspend fun handBackCall(id: String) = callOverlay?.handBack(id)
+        ?: com.wangzan101.mika.calls.NativeHandBackResult.NOT_ACTIVE
 
     private var callOverlay: com.wangzan101.mika.calls.NativeCallOverlay? = null
 

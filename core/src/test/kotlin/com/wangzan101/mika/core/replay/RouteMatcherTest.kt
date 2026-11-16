@@ -31,37 +31,6 @@ class RouteMatcherTest {
     private val memo = Route("m", "在备忘录里写{1}", 1, listOf("com.notes"), emptyMap(), emptyList(), lastUsedMs = 0)
     private val goal = "在备忘录里写今天天气不错"
 
-    @Test fun newPortKeepsValidatedSlotsAndDoesNotCallLegacyDecision() = runTest {
-        val chat = FakeModel()
-        var legacyCalls = 0
-        val matcher = RouteMatcher(chat, MemRoutes(memo), null,
-            decision = DecisionModel { _, _, _, _ -> legacyCalls++; DecisionChoice("skip", 1.0) },
-            decisionPort = com.wangzan101.mika.core.decision.DecisionPort { input ->
-                assertEquals("route", input.purpose)
-                assertTrue(!input.applicability.isNullOrBlank())
-                com.wangzan101.mika.core.decision.ChoiceAttempt.Pick("route_0", "jev")
-            })
-        assertEquals(RouteChoice(memo, listOf("今天天气不错")), matcher.choose(goal))
-        assertEquals(0, legacyCalls)
-        assertTrue(chat.requests.isEmpty())
-    }
-
-    @Test fun newPortAbstentionOrInvalidChoiceUsesChatNotLegacyDecision() = runTest {
-        for (result in listOf(
-            com.wangzan101.mika.core.decision.ChoiceAttempt.Abstain("uncertain"),
-            com.wangzan101.mika.core.decision.ChoiceAttempt.Pick("invalid", "jev"),
-        )) {
-            var legacyCalls = 0
-            val chat = FakeModel(text("""{"route":1,"slots":["今天天气不错"]}"""))
-            val matcher = RouteMatcher(chat, MemRoutes(memo), null,
-                decision = DecisionModel { _, _, _, _ -> legacyCalls++; DecisionChoice("skip", 1.0) },
-                decisionPort = com.wangzan101.mika.core.decision.DecisionPort { result })
-            assertEquals(RouteChoice(memo, listOf("今天天气不错")), matcher.choose(goal))
-            assertEquals(0, legacyCalls)
-            assertEquals(1, chat.requests.size)
-        }
-    }
-
     @Test fun decisionSelectsValidatedRouteWithoutCallingTextModel() = runTest {
         val m = FakeModel()
         val selected = RouteMatcher(m, MemRoutes(memo), null, DecisionModel { _, _, options, applicable ->

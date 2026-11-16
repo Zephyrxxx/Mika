@@ -6,10 +6,11 @@ import java.net.URLEncoder
 
 /** Mika 对外的地址都在这里:仓库、问题、检查更新用的两个来源。换地址只改这一处。 */
 object MikaLinks {
-    const val REPO = "https://github.com/Zephyrxxx/Mika"
-    const val REPO_LABEL = "github.com/Zephyrxxx/Mika"
+    const val REPO = "https://github.com/wangzan101/Mika"
+    const val REPO_LABEL = "github.com/wangzan101/Mika"
     const val README = "$REPO#readme"
-    const val RELEASES = "$REPO/releases"
+    // Keep the installed phonecompat app on its existing signed update channel.
+    const val RELEASES = "https://github.com/Zephyrxxx/Mika/releases"
     const val NEW_ISSUE = "$REPO/issues/new"
     const val X = "https://x.com/wangzan101"
     const val X_HANDLE = "@wangzan101"

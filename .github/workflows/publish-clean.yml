@@ -1,0 +1,201 @@
+name: Package clean phonecompat
+
+# No push, pull_request or workflow_call trigger. Publication is an explicit action.
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Full 40-character SHA of the selected branch head
+        type: string
+        required: true
+      ci_run_id:
+        description: Successful CI run for exactly that SHA (all four jobs)
+        type: string
+        required: true
+      publish:
+        description: Sign and publish v1.0.625 (main only); false uploads unsigned artifacts only
+        type: boolean
+        default: false
+        required: true
+
+permissions: {}
+concurrency:
+  group: mika-custom-release
+  cancel-in-progress: false
+
+env:
+  VERSION: 1.0.625
+  VERSION_CODE: '100625'
+
+jobs:
+  guard:
+    if: github.repository == 'Zephyrxxx/Mika' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/review/vivo-native-clean')
+    runs-on: ubuntu-latest
+    permissions: {contents: read, actions: read}
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REVISION: ${{ inputs.revision }}
+          CI_RUN: ${{ inputs.ci_run_id }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$CI_RUN" =~ ^[0-9]+$ ]]
+          test "$REVISION" = "$GITHUB_SHA"
+          test "$(gh api "repos/$GH_REPO/commits/$GITHUB_REF_NAME" --jq .sha)" = "$REVISION"
+          if [[ "$PUBLISH" == true ]]; then test "$GITHUB_REF" = refs/heads/main; fi
+          gh api "repos/$GH_REPO/actions/runs/$CI_RUN" > run.json
+          jq -e --arg sha "$REVISION" --arg branch "$GITHUB_REF_NAME" --arg repo "$GH_REPO" '
+            .head_repository.full_name == $repo and .head_sha == $sha and .head_branch == $branch and .path == ".github/workflows/ci.yml" and
+            .status == "completed" and .conclusion == "success" and
+            (.event == "push" or .event == "pull_request" or .event == "workflow_dispatch")' run.json
+          gh api "repos/$GH_REPO/actions/runs/$CI_RUN/jobs?per_page=100" > jobs.json
+          jq -e '[.jobs[] | select(.status == "completed" and .conclusion == "success") | .name] |
+            (index("core (JVM)") != null and index("cli (Python)") != null and
+             index("app (Android)") != null and index("relay (Go)") != null)' jobs.json
+          # An occupied tag or draft release is a hard stop, never an overwrite/retry target.
+          test "$(gh api "repos/$GH_REPO/git/matching-refs/tags/v$VERSION" --jq length)" = 0
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[].tag_name' > tags.txt
+          if grep -Fx "v$VERSION" tags.txt; then echo "Release already exists" >&2; exit 1; fi
+          echo "sha=$REVISION" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: guard
+    runs-on: ubuntu-latest
+    permissions: {contents: read}
+    steps:
+      - uses: actions/checkout@v7
+        with: {ref: '${{ needs.guard.outputs.sha }}', persist-credentials: false}
+      - uses: actions/setup-java@v6
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v4
+        with: {packages: 'platform-tools platforms;android-36 build-tools;35.0.0'}
+      - uses: gradle/actions/setup-gradle@v6
+        with: {cache-provider: basic}
+      - name: Build unsigned APKs, without release credentials
+        run: |
+          set -euo pipefail
+          test ! -f .github/workflows/publish.yml
+          ./gradlew :app:assembleRelease
+          bt="$ANDROID_HOME/build-tools/35.0.0"
+          for abi in universal arm64-v8a; do
+            file="app/build/outputs/apk/release/app-$abi-release-unsigned.apk"
+            "$bt/aapt" dump badging "$file" > "$RUNNER_TEMP/badging"
+            grep -F "package: name='com.wangzan101.mika.phonecompat' versionCode='$VERSION_CODE' versionName='$VERSION'" "$RUNNER_TEMP/badging"
+            if grep -qx application-debuggable "$RUNNER_TEMP/badging"; then exit 1; fi
+            if [[ "$abi" == arm64-v8a ]]; then grep -Fx "native-code: 'arm64-v8a'" "$RUNNER_TEMP/badging"; fi
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: clean-unsigned-${{ needs.guard.outputs.sha }}
+          path: app/build/outputs/apk/release/*-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: [guard, build]
+    if: inputs.publish && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: mika-release
+    permissions: {contents: write, actions: read}
+    # No checkout and no repository scripts execute in the signing environment.
+    steps:
+      - uses: actions/setup-java@v6
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v4
+        with: {packages: 'platform-tools platforms;android-36 build-tools;35.0.0'}
+      - uses: actions/download-artifact@v7
+        with: {name: 'clean-unsigned-${{ needs.guard.outputs.sha }}', path: unsigned}
+      - name: Confirm source is still green main before accessing signing credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.guard.outputs.sha }}
+          CI_RUN: ${{ inputs.ci_run_id }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GH_REPO/commits/main" --jq .sha)" = "$SHA"
+          gh api "repos/$GH_REPO/actions/runs/$CI_RUN" | jq -e --arg sha "$SHA" \
+            '.head_sha == $sha and .head_branch == "main" and .status == "completed" and .conclusion == "success"'
+      - name: Sign and validate every APK before publication
+        env:
+          KEYSTORE: ${{ secrets.MIKA_KEYSTORE_B64 }}
+          STORE_PASS: ${{ secrets.MIKA_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          ks="$RUNNER_TEMP/private.p12"
+          trap 'rm -f "$ks"' EXIT
+          test "$(find unsigned -type f | wc -l)" = 2
+          printf '%s' "$KEYSTORE" | base64 --decode > "$ks"
+          unset KEYSTORE
+          bt="$ANDROID_HOME/build-tools/35.0.0"
+          mkdir dist
+          for abi in universal arm64-v8a; do
+            file="dist/Mika-v$VERSION.apk"
+            [[ "$abi" == universal ]] || file="dist/Mika-v$VERSION-arm64.apk"
+            "$bt/apksigner" sign --ks "$ks" --ks-key-alias phonecompat --ks-pass env:STORE_PASS --v4-signing-enabled false --out "$file" "unsigned/app-$abi-release-unsigned.apk"
+            "$bt/apksigner" verify --verbose --print-certs "$file" > "$RUNNER_TEMP/verify"
+            test "$(grep -c '^Signer #[0-9].* certificate SHA-256 digest:' "$RUNNER_TEMP/verify")" = 1
+            grep -Fx 'Signer #1 certificate SHA-256 digest: 911fdd3e3f92446e630bf329ee171675bcf6dd31d59f3cf2a43312748fa1d531' "$RUNNER_TEMP/verify"
+            "$bt/aapt" dump badging "$file" > "$RUNNER_TEMP/badging"
+            grep -F "package: name='com.wangzan101.mika.phonecompat' versionCode='$VERSION_CODE' versionName='$VERSION'" "$RUNNER_TEMP/badging"
+            if grep -qx application-debuggable "$RUNNER_TEMP/badging"; then exit 1; fi
+            if [[ "$abi" == arm64-v8a ]]; then grep -Fx "native-code: 'arm64-v8a'" "$RUNNER_TEMP/badging"; fi
+          done
+          (cd dist && sha256sum *.apk > SHA256SUMS)
+      - name: Recheck green main, then publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.guard.outputs.sha }}
+          CI_RUN: ${{ inputs.ci_run_id }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GH_REPO/commits/main" --jq .sha)" = "$SHA"
+          gh api "repos/$GH_REPO/actions/runs/$CI_RUN" > run.json
+          jq -e --arg sha "$SHA" --arg repo "$GH_REPO" '.head_repository.full_name == $repo and .head_sha == $sha and .head_branch == "main" and
+            .path == ".github/workflows/ci.yml" and .status == "completed" and .conclusion == "success"' run.json
+          gh api "repos/$GH_REPO/actions/runs/$CI_RUN/jobs?per_page=100" > jobs.json
+          jq -e '[.jobs[] | select(.status == "completed" and .conclusion == "success") | .name] |
+            (index("core (JVM)") != null and index("cli (Python)") != null and
+             index("app (Android)") != null and index("relay (Go)") != null)' jobs.json
+          tag="v$VERSION"
+          test "$(gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" --jq length)" = 0
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[].tag_name' > tags.txt
+          if grep -Fx "$tag" tags.txt; then echo "Release already exists" >&2; exit 1; fi
+          # Atomic ref creation fails if any competing publisher claimed this version.
+          gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$SHA"
+          # The tag was claimed atomically above. Capture the draft identity directly;
+          # GET /releases/tags/{tag} only promises published releases.
+          gh api --method POST "repos/$GH_REPO/releases" -f tag_name="$tag" -f target_commitish="$SHA" \
+            -f name="Mika $VERSION" -f body='Clean upstream-based phone compatibility build. Device acceptance testing is still required.' \
+            -F draft=true -F prerelease=false > created.json
+          release_id=$(jq -er '.id | select(type == "number" and . > 0 and . == floor)' created.json)
+          jq -e --arg tag "$tag" --arg sha "$SHA" --argjson id "$release_id" \
+            '.id == $id and .tag_name == $tag and .target_commitish == $sha and .draft == true and
+             .prerelease == false and (.assets | length == 0)' created.json
+          gh release upload "$tag" dist/*
+          # The remote draft must contain exactly the bytes validated above.
+          gh api "repos/$GH_REPO/releases/$release_id" > draft.json
+          jq -e --arg tag "$tag" --arg sha "$SHA" --argjson id "$release_id" \
+            '.id == $id and .tag_name == $tag and .draft == true and .prerelease == false and
+             .target_commitish == $sha and (.assets | length == 3)' draft.json
+          for file in dist/*; do
+            digest="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+            jq -e --arg name "$(basename "$file")" --arg digest "$digest" --argjson size "$(wc -c < "$file")" \
+              '[.assets[] | select(.name == $name and .state == "uploaded" and .digest == $digest and .size == $size)] | length == 1' draft.json
+          done
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq .object.sha)" = "$SHA"
+          # If main changed during upload, leave the complete release as a draft.
+          test "$(gh api "repos/$GH_REPO/commits/main" --jq .sha)" = "$SHA"
+          gh api --method PATCH "repos/$GH_REPO/releases/$release_id" -F draft=false -F prerelease=false -f make_latest=true > published.json
+          gh api "repos/$GH_REPO/releases/latest" > latest.json
+          jq -e --arg tag "$tag" --arg sha "$SHA" --argjson id "$release_id" '.id == $id and .tag_name == $tag and .target_commitish == $sha and
+            .draft == false and .prerelease == false and (.assets | length == 3)' latest.json
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq .object.sha)" = "$SHA"
+          test "$(gh api "repos/$GH_REPO/commits/main" --jq .sha)" = "$SHA"

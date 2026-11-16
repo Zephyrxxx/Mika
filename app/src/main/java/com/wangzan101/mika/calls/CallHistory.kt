@@ -40,6 +40,7 @@ data class CallFollowUp(
     enum class Status { PENDING, DONE, UNKNOWN }
 }
 
+/** Legacy phonecompat history metadata. Stored and round-tripped only; no interval UI or control logic. */
 @Serializable
 data class CallInterval(val ai: Boolean, val startMs: Long, val endMs: Long)
 

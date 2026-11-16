@@ -3,7 +3,6 @@ package com.wangzan101.mika.ui
 import android.Manifest
 import android.app.ActivityManager
 import android.app.NotificationManager
-import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -12,7 +11,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
-import android.telecom.TelecomManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
@@ -72,11 +70,10 @@ internal data class CallDeviceReadiness(
 
 internal data class CallDeviceControls(
     val readiness: CallDeviceReadiness,
-    val stockDialer: Boolean,
     val canAnswerRinging: Boolean,
     val allowAnswerRinging: () -> Unit,
-    val needsDialerRole: Boolean,
-    val requestDialerRole: () -> Unit,
+    val accessibilityAvailable: Boolean,
+    val accessibilityAction: () -> Unit,
     val phoneActionLabel: Int,
     val notificationActionLabel: Int,
     val phoneAction: () -> Unit,
@@ -91,32 +88,25 @@ internal fun rememberCallDeviceControls(runtime: CallRuntime, onSettingsError: (
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val scope = rememberCoroutineScope()
-    val roles = context.getSystemService(RoleManager::class.java)
-    val telecom = context.getSystemService(TelecomManager::class.java)
-    fun usesStockDialer() = telecom?.defaultDialerPackage?.let { it != context.packageName && it == telecom.systemDialerPackage } == true
-    fun canAnswerRinging() = context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED
-    var stockDialer by remember(context) { mutableStateOf(usesStockDialer()) }
-    var answerAllowed by remember(context) { mutableStateOf(canAnswerRinging()) }
-    var answerDenied by rememberSaveable { mutableStateOf(false) }
-    fun needsDialerRole() = roles?.isRoleAvailable(RoleManager.ROLE_DIALER) == true &&
-        !roles.isRoleHeld(RoleManager.ROLE_DIALER)
-    var missingDialerRole by remember(context) { mutableStateOf(needsDialerRole()) }
     var status by remember(context) { mutableStateOf(readCallDeviceReadiness(context)) }
+    fun canAnswerRinging() = context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED
+    fun accessibilityAvailable() = com.wangzan101.mika.cap.phone.a11y.ScreenAccessibility.instance.value != null
+    var answerAllowed by remember(context) { mutableStateOf(canAnswerRinging()) }
+    var accessibilityEnabled by remember(context) { mutableStateOf(accessibilityAvailable()) }
+    var answerDenied by rememberSaveable { mutableStateOf(false) }
     var phoneDenied by rememberSaveable { mutableStateOf(false) }
     var notificationDenied by rememberSaveable { mutableStateOf(false) }
 
     fun readBack() {
-        stockDialer = usesStockDialer()
         answerAllowed = canAnswerRinging()
+        accessibilityEnabled = accessibilityAvailable()
         if (answerAllowed) answerDenied = false
-        missingDialerRole = needsDialerRole()
         status = readCallDeviceReadiness(context)
         if (status.phoneAllowed) phoneDenied = false
         if (status.notificationBlock != CallNotificationBlock.Permission) notificationDenied = false
         scope.launch { runtime.refresh() }
     }
 
-    val requestDialer = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { readBack() }
     val requestAnswer = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         readBack()
         answerDenied = !answerAllowed
@@ -163,22 +153,16 @@ internal fun rememberCallDeviceControls(runtime: CallRuntime, onSettingsError: (
     val requestNotification = status.notificationBlock == CallNotificationBlock.Permission && !notificationDenied
     return CallDeviceControls(
         readiness = status,
-        stockDialer = stockDialer, canAnswerRinging = answerAllowed,
+        canAnswerRinging = answerAllowed,
         allowAnswerRinging = {
-            if (answerDenied) openSettings(appDetails) else requestAnswer.launch(Manifest.permission.ANSWER_PHONE_CALLS)
+            when {
+                canAnswerRinging() -> readBack()
+                answerDenied -> openSettings(appDetails)
+                else -> requestAnswer.launch(Manifest.permission.ANSWER_PHONE_CALLS)
+            }
         },
-        needsDialerRole = missingDialerRole,
-        requestDialerRole = {
-            if (roles != null && needsDialerRole()) {
-                try {
-                    requestDialer.launch(roles.createRequestRoleIntent(RoleManager.ROLE_DIALER))
-                } catch (_: ActivityNotFoundException) {
-                    openSettings(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
-                } catch (_: SecurityException) {
-                    openSettings(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
-                }
-            } else readBack()
-        },
+        accessibilityAvailable = accessibilityEnabled,
+        accessibilityAction = { openSettings(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), appDetails) },
         phoneActionLabel = if (phoneDenied) R.string.calls_device_open_app_settings else R.string.calls_device_allow_phone,
         notificationActionLabel = if (requestNotification) R.string.calls_device_allow_notifications else R.string.calls_notification_settings,
         phoneAction = {
@@ -329,4 +313,21 @@ internal fun CallLockedDialPendingRow(state: CallRuntimeState, enabled: Boolean,
             }
         }
     }
+}
+
+/** These actions only open platform consent UI; they never grant a permission or a phone role. */
+@Composable
+internal fun CallNativeCompatibilityRows(device: CallDeviceControls, enabled: Boolean) {
+    ListRow(
+        MikaIcons.Phone, stringResource(R.string.calls_native_answer_permission),
+        stringResource(if (device.canAnswerRinging) R.string.calls_native_answer_granted else R.string.calls_native_answer_note),
+        tone = if (device.canAnswerRinging) TileTone.Ok else TileTone.Warn,
+        onClick = device.allowAnswerRinging.takeIf { enabled && !device.canAnswerRinging },
+    ) { if (enabled && !device.canAnswerRinging) RowChevron() }
+    ListRow(
+        MikaIcons.Gear, stringResource(R.string.calls_native_accessibility),
+        stringResource(if (device.accessibilityAvailable) R.string.calls_device_permission_granted else R.string.calls_native_accessibility_note),
+        tone = if (device.accessibilityAvailable) TileTone.Ok else TileTone.Warn,
+        onClick = device.accessibilityAction.takeIf { enabled && !device.accessibilityAvailable },
+    ) { if (enabled && !device.accessibilityAvailable) RowChevron() }
 }
