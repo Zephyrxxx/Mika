@@ -170,22 +170,32 @@ jobs:
           if grep -Fx "$tag" tags.txt; then echo "Release already exists" >&2; exit 1; fi
           # Atomic ref creation fails if any competing publisher claimed this version.
           gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$SHA"
-          gh release create "$tag" --verify-tag --target "$SHA" --draft --title "Mika $VERSION" --notes 'Clean upstream-based phone compatibility build. Device acceptance testing is still required.'
+          # The tag was claimed atomically above. Capture the draft identity directly;
+          # GET /releases/tags/{tag} only promises published releases.
+          gh api --method POST "repos/$GH_REPO/releases" -f tag_name="$tag" -f target_commitish="$SHA" \
+            -f name="Mika $VERSION" -f body='Clean upstream-based phone compatibility build. Device acceptance testing is still required.' \
+            -F draft=true -F prerelease=false > created.json
+          release_id=$(jq -er '.id | select(type == "number" and . > 0 and . == floor)' created.json)
+          jq -e --arg tag "$tag" --arg sha "$SHA" --argjson id "$release_id" \
+            '.id == $id and .tag_name == $tag and .target_commitish == $sha and .draft == true and
+             .prerelease == false and (.assets | length == 0)' created.json
           gh release upload "$tag" dist/*
           # The remote draft must contain exactly the bytes validated above.
-          gh api "repos/$GH_REPO/releases/tags/$tag" > draft.json
-          jq -e --arg sha "$SHA" '.draft == true and .target_commitish == $sha and (.assets | length == 3)' draft.json
+          gh api "repos/$GH_REPO/releases/$release_id" > draft.json
+          jq -e --arg tag "$tag" --arg sha "$SHA" --argjson id "$release_id" \
+            '.id == $id and .tag_name == $tag and .draft == true and .prerelease == false and
+             .target_commitish == $sha and (.assets | length == 3)' draft.json
           for file in dist/*; do
             digest="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
             jq -e --arg name "$(basename "$file")" --arg digest "$digest" --argjson size "$(wc -c < "$file")" \
-              '[.assets[] | select(.name == $name and .digest == $digest and .size == $size)] | length == 1' draft.json
+              '[.assets[] | select(.name == $name and .state == "uploaded" and .digest == $digest and .size == $size)] | length == 1' draft.json
           done
           test "$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq .object.sha)" = "$SHA"
           # If main changed during upload, leave the complete release as a draft.
           test "$(gh api "repos/$GH_REPO/commits/main" --jq .sha)" = "$SHA"
-          gh release edit "$tag" --draft=false --prerelease=false --latest=true
+          gh api --method PATCH "repos/$GH_REPO/releases/$release_id" -F draft=false -F prerelease=false -f make_latest=true > published.json
           gh api "repos/$GH_REPO/releases/latest" > latest.json
-          jq -e --arg tag "$tag" --arg sha "$SHA" '.tag_name == $tag and .target_commitish == $sha and
+          jq -e --arg tag "$tag" --arg sha "$SHA" --argjson id "$release_id" '.id == $id and .tag_name == $tag and .target_commitish == $sha and
             .draft == false and .prerelease == false and (.assets | length == 3)' latest.json
           test "$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq .object.sha)" = "$SHA"
           test "$(gh api "repos/$GH_REPO/commits/main" --jq .sha)" = "$SHA"
