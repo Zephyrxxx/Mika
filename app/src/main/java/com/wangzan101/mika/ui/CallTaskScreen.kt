@@ -52,6 +52,8 @@ internal class CallTaskDraft {
         simOverride = null
     }
 
+    fun snapshotFields(): List<String> = listOf(number, goal, questions, context, constraints, simOverride.orEmpty())
+
     companion object {
         val Saver = listSaver<CallTaskDraft, String>(
             save = { draft -> listOf(draft.number, draft.goal, draft.questions, draft.context,
@@ -86,6 +88,7 @@ internal fun CallTaskScreen(
     onConfirmLocked: (CallTaskSubmission) -> Unit,
     voiceProfile: com.wangzan101.mika.calls.CallVoiceProfile,
     onVoiceProfiles: () -> Unit,
+    voiceBriefing: VoiceBriefingLauncher? = null,
 ) {
     var questionsOpen by rememberSaveable { mutableStateOf(false) }
     var contextOpen by rememberSaveable { mutableStateOf(false) }
@@ -143,7 +146,6 @@ internal fun CallTaskScreen(
                 stringResource(R.string.calls_task_sim_override_summary, sim.label, preferred.label)
             sim != null -> sim.label
             config.defaultOutgoingSimId != null && draft.simOverride == null -> stringResource(R.string.calls_sim_unavailable)
-            state.systemPhone && draft.simOverride == null && config.defaultOutgoingSimId == null -> "系统选择 SIM"
             else -> missingSim
         }
         ListRow(MikaIcons.Phone, stringResource(R.string.calls_sim), simSummary,
@@ -195,11 +197,18 @@ internal fun CallTaskScreen(
         stringResource(R.string.calls_task_review), editable && number != null && brief != null,
         {
             if (number != null && brief != null) {
-                review = CallTaskSubmission(number, sim?.id, sim?.label ?: if (state.systemPhone && draft.simOverride == null && config.defaultOutgoingSimId == null) "系统选择 SIM" else missingSim, voiceProfile.name, brief)
+                review = CallTaskSubmission(number, sim?.id, sim?.label ?: missingSim, voiceProfile.name, brief)
             }
         },
         Modifier.testTag("call-task-review"),
     )
+    voiceBriefing?.let { voice ->
+        OutlinedButton(
+            onClick = { if (number != null && sim != null) voice.start(number, sim.id, sim.label) },
+            enabled = ready && canDial && editable && !voice.busy && number != null && sim != null,
+            modifier = Modifier.fillMaxWidth().testTag("call-task-voice"),
+        ) { Text(stringResource(R.string.calls_voice_briefing_start)) }
+    }
     Spacer(Modifier.height(8.dp))
     FooterNote(stringResource(R.string.calls_task_one_off))
 
@@ -208,10 +217,9 @@ internal fun CallTaskScreen(
         onChoose = { draft.simOverride = it; showSims = false }, onDismiss = { showSims = false },
     )
     review?.let { submission ->
-        val allowed = ready && canDial && (state.simOptions.any { it.id == submission.simId } ||
-            state.systemPhone && submission.simId == null && draft.simOverride == null && config.defaultOutgoingSimId == null)
+        val allowed = ready && canDial && state.simOptions.any { it.id == submission.simId }
         CallTaskReviewDialog(
-            submission, allowed, allowLocked = !state.systemPhone,
+            submission, allowed,
             onDismiss = { review = null },
             onDial = { locked ->
                 if (allowed) {
@@ -267,7 +275,7 @@ private fun CallTaskSimDialog(
 }
 
 @Composable
-private fun CallTaskReviewDialog(submission: CallTaskSubmission, canDial: Boolean, allowLocked: Boolean, onDismiss: () -> Unit, onDial: (Boolean) -> Unit) {
+private fun CallTaskReviewDialog(submission: CallTaskSubmission, canDial: Boolean, onDismiss: () -> Unit, onDial: (Boolean) -> Unit) {
     var locked by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -286,7 +294,7 @@ private fun CallTaskReviewDialog(submission: CallTaskSubmission, canDial: Boolea
                 }
                 if (submission.brief.context.isNotBlank()) TaskReviewField(stringResource(R.string.calls_task_context), submission.brief.context)
                 if (submission.brief.constraints.isNotBlank()) TaskReviewField(stringResource(R.string.calls_task_constraints), submission.brief.constraints)
-                if (canDial && allowLocked) {
+                if (canDial) {
                     for (mode in listOf(false, true)) {
                         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
                             .testTag(if (mode) "call-mode-lock" else "call-mode-now")

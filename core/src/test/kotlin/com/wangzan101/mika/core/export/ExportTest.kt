@@ -2,6 +2,7 @@ package com.wangzan101.mika.core.export
 
 import com.wangzan101.mika.core.agent.AttachmentLines
 import com.wangzan101.mika.core.agent.AttachedPage
+import com.wangzan101.mika.core.agent.Conversation
 import com.wangzan101.mika.core.agent.QuoteMessage
 import com.wangzan101.mika.core.export.json.JsonExportBackend
 import com.wangzan101.mika.core.export.markdown.MarkdownExportBackend
@@ -24,8 +25,12 @@ import java.util.zip.ZipFile
 class ExportTest {
     private val labels = ExportLabels.English
 
-    private fun doc(content: ExportContent = ExportContent(), selection: ExportSelection = ExportSelection("c1")): ExportDocument = kotlinx.coroutines.runBlocking {
-        ExportDocumentBuilder(Source(), labels, "test", "en") { 5_000L }.build("c1", "标题", selection, content)
+    private fun doc(
+        content: ExportContent = ExportContent(),
+        selection: ExportSelection = ExportSelection("c1"),
+        source: ExportSource = Source(),
+    ): ExportDocument = kotlinx.coroutines.runBlocking {
+        ExportDocumentBuilder(source, labels, "test", "en") { 5_000L }.build("c1", "标题", selection, content)
     }
 
     @Test fun parsesPageQuoteScreenAttachmentAndBuildsBlocks() {
@@ -114,6 +119,37 @@ class ExportTest {
         }
     }
 
+    @Test fun stopSummaryIsExportedOnceAsTheCancellationOutcome() = kotlinx.coroutines.runBlocking {
+        val summary = "已整理三份文件"
+        val document = doc(
+            selection = ExportSelection("c1", setOf(ExportIds.answer(0)), allSelected = false),
+            source = Source(status = "cancelled", outcome = summary),
+        )
+        val root = kotlin.io.path.createTempDirectory().toFile()
+        try {
+            val sink = DirectoryExportSink(root)
+            MarkdownExportBackend(labels).render(document, ExportPresentation(), Reader, sink) {}
+            val text = File(root, "document.md").readText()
+            assertEquals(1, text.lines().count { summary in it })
+            assertTrue(text.contains("> ${labels.cancelled}\n> $summary"))
+
+            JsonExportBackend().render(document, ExportPresentation(), Reader, sink) {}
+            val json = Json.parseToJsonElement(File(root, "document.json").readText()).jsonObject
+            val answer = json.getValue("blocks").jsonArray.single().jsonObject
+            assertEquals(summary, answer.getValue("outcome").jsonObject.getValue("summary").jsonPrimitive.content)
+            assertEquals("", answer.getValue("markdown").jsonPrimitive.content)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun cancelledTurnWithoutStopSummaryExportsOnlyTheStatus() {
+        val document = doc(source = Source(status = "cancelled", outcome = Conversation.CANCELLED_OUTCOME))
+        val answer = document.blocks.filterIsInstance<ExportBlock.Answer>().single()
+        assertEquals(AnswerOutcome.Cancelled(null), answer.outcome)
+        assertEquals("", answer.markdown)
+    }
+
     @Test fun namesAreSafeAndUnique() {
         assertEquals("ab.txt", ExportNames.safeFileName("../a\\b.txt"))
         assertEquals("attachment", ExportNames.safeFileName("..."))
@@ -124,7 +160,35 @@ class ExportTest {
         val long = ExportNames.fit("很".repeat(200) + ".md")
         assertTrue(long.endsWith(".md"))
         assertTrue(long.codePointCount(0, long.length) <= ExportNames.MAX_NAME)
+        val longWithoutExtension = ExportNames.fit("x".repeat(200))
+        assertTrue(longWithoutExtension.codePointCount(0, longWithoutExtension.length) <= ExportNames.MAX_NAME)
+        assertTrue(longWithoutExtension.toByteArray(Charsets.UTF_8).size <= ExportNames.MAX_NAME_BYTES)
         assertFalse(ExportNames.entryPath("assets/a.txt").startsWith("/"))
+    }
+
+    @Test fun unicodeAssetNamesFitFilesystemLimitsAndKeepTheirExtension() {
+        val root = createTempDir()
+        try {
+            val name = ExportNames.safeFileName("界".repeat(120) + ".txt")
+            File(root, name).writeText("asset")
+            assertEquals("asset", File(root, name).readText())
+            assertTrue(name.endsWith(".txt"))
+            assertTrue(name.codePointCount(0, name.length) <= ExportNames.MAX_NAME)
+            assertTrue(name.toByteArray(Charsets.UTF_8).size <= ExportNames.MAX_NAME_BYTES)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun uniqueUnicodeNamesStayWithinTheFilesystemByteLimit() {
+        val name = ExportNames.fit("界".repeat(200) + ".txt")
+        val used = mutableSetOf(name)
+        val duplicate = ExportNames.unique(name, used)
+
+        assertTrue(duplicate.endsWith(".txt"))
+        assertTrue(duplicate.codePointCount(0, duplicate.length) <= ExportNames.MAX_NAME)
+        assertTrue(duplicate.toByteArray(Charsets.UTF_8).size <= ExportNames.MAX_NAME_BYTES)
+        assertTrue(used.contains(duplicate))
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -290,13 +354,13 @@ class ExportTest {
         }
     }
 
-    private class Source : ExportSource {
+    private class Source(private val status: String = "succeeded", private val outcome: String = "好了") : ExportSource {
         override suspend fun turns(conversationId: String) = listOf(
             ExportTurnRecord(
                 index = 0,
                 userText = userText(),
-                outcome = "好了",
-                status = "succeeded",
+                outcome = outcome,
+                status = status,
                 runId = "r1",
                 atMs = 1_000L,
                 steers = listOf("改成这个"),

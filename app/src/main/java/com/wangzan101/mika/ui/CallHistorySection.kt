@@ -87,7 +87,7 @@ internal fun CallHistorySection(
                 HistoryFilter.OPEN -> !record.handled
                 HistoryFilter.DONE -> record.handled
             }
-            val direction = when (record.direction) { CallDirection.INCOMING -> incoming; CallDirection.OUTGOING -> outgoing; null -> "系统通话" }
+            val direction = if (record.direction == CallDirection.INCOMING) incoming else outgoing
             matchesFilter && (text.isEmpty() || record.number.orEmpty().contains(text, ignoreCase = true) ||
                 (digits != null && record.number.orEmpty().filter(Char::isDigit).contains(digits)) ||
                 direction.contains(text, ignoreCase = true) || record.result.contains(text, ignoreCase = true) ||
@@ -249,7 +249,7 @@ private fun CallHistoryItem(
     val formatter = remember(locale) { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT, locale) }
     val start = remember(record.startedAtMs, formatter) { formatter.format(Date(record.startedAtMs)) }
     val end = remember(record.endedAtMs, formatter) { formatter.format(Date(record.endedAtMs)) }
-    val direction = record.direction?.let { directionLabel(it) } ?: "系统通话"
+    val direction = directionLabel(record.direction)
     val status = stringResource(if (record.handled) R.string.calls_history_done else R.string.calls_history_open)
     val name = record.number?.let { "\u2066$it\u2069" } ?: stringResource(R.string.calls_unknown_number)
     val expansion = stringResource(if (expanded) R.string.calls_collapse else R.string.calls_transcript)
@@ -287,8 +287,8 @@ private fun CallHistoryItem(
                         }
                     }
                 }
-                record.summary?.followUpDraft?.let { draft ->
-                    CallFollowUpDraft(record.id, draft, onSaveDraft)
+                if (record.summaryStatus == SummaryStatus.READY && record.summary != null) {
+                    CallFollowUpDraft(record.id, record.summary.followUpDraft, onSaveDraft)
                 }
                 if (record.summaryStatus == SummaryStatus.PENDING) {
                     Text(stringResource(R.string.calls_summary_generating), color = MikaTheme.colors.ink3)
@@ -372,8 +372,16 @@ private fun CallHistoryItem(
 @Composable
 internal fun CallTranscriptText(line: CallTranscriptLine) {
     Column {
-        Text(stringResource(if (line.role == "assistant") R.string.app_name else R.string.calls_caller),
+        Text(stringResource(callTranscriptSpeakerLabel(line.role)),
             style = MaterialTheme.typography.labelMedium, color = MikaTheme.colors.ink3)
         Text(line.text, style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+/** One role mapping for the full transcript and the compact latest-line preview. */
+@StringRes
+internal fun callTranscriptSpeakerLabel(role: String): Int = when (role) {
+    "assistant" -> R.string.app_name
+    "system" -> R.string.calls_dtmf_status_label
+    else -> R.string.calls_caller
 }

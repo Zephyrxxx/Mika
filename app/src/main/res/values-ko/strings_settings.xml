@@ -50,6 +50,8 @@
     <string name="settings_notif_master">모든 알림</string>
     <string name="settings_allowed">허용됨</string>
     <string name="settings_task_notifs">작업 알림</string>
+    <string name="settings_live_task_updates">실시간 작업 알림</string>
+    <string name="settings_live_task_updates_detail">진행 중인 작업을 상태 표시줄에 표시할지 선택하세요</string>
     <string name="settings_keep_on">화면 켜 두기</string>
     <string name="settings_keep_on_sub">작업이 실행되는 동안 화면이 켜져 있고(사용하지 않을 때는 평소처럼 어두워져요), 끝나면 원래대로 돌아가요</string>
     <string name="settings_mute">사용 중인 앱 음소거</string>
@@ -62,6 +64,15 @@
     <string name="settings_pace_human">사람처럼</string>
     <string name="settings_pace_human_detail">모든 앱에서 느리게, 화면을 읽고 나서 다음으로 넘어가요</string>
     <string name="settings_pace_foot">너무 빠르게 쓰면 로그아웃되거나 인증을 요구하는 앱이 있어요. 속도가 느릴수록 작업에 시간이 더 걸려요.</string>
+    <string name="settings_pace_per_app">앱별 속도</string>
+    <string name="settings_pace_per_app_sub">봇 검사가 엄격한 앱만 느리게, 여유 있는 앱만 빠르게; 나머지는 전역 속도를 따릅니다</string>
+    <string name="settings_pace_per_app_intro">이 목록의 앱은 각자의 속도로 동작하고, 나머지는 전역 속도(현재 %1$s)를 따릅니다.</string>
+    <string name="settings_pace_per_app_empty">아직 앱별로 설정된 앱이 없습니다.</string>
+    <string name="settings_pace_per_app_add">앱 추가</string>
+    <string name="settings_pace_per_app_search">앱 검색</string>
+    <string name="settings_pace_per_app_none">일치하는 앱이 없습니다</string>
+    <string name="settings_pace_per_app_pick">선택</string>
+    <string name="settings_pace_per_app_remove">삭제(전역 속도 따르기)</string>
     <string name="settings_parallel">동시 작업</string>
     <string name="settings_parallel_sub">서로 다른 채팅의 작업이 각자 가상 화면을 가져요</string>
     <plurals name="settings_count_tasks">
@@ -98,6 +109,8 @@
     <string name="net_proxy">네트워크 프록시</string>
     <string name="net_proxy_row_sub">모델 호출, 업데이트, 내장 브라우저, 명령에 사용돼요</string>
     <string name="net_proxy_hint">Mika의 모델 호출(대화, 모델 목록, 계정 로그인), 앱 안에서의 업데이트 다운로드, 내장 브라우저, 그리고 ‘파일 및 컴퓨팅 환경’의 명령(그곳에서 네트워크 접속이 켜져 있을 때)에 사용돼요. 이 휴대전화나 로컬 네트워크의 주소(localhost, 192.168.x.x, 10.x.x.x, .local로 끝나는 이름)는 항상 직접 연결하므로 로컬 모델도 그대로 쓸 수 있어요. user:password@를 포함할 수 있으며, 이 휴대전화에 암호화되어 저장돼요. 비워 두면 직접 연결해요.</string>
+    <string name="net_proxy_summary">모델 요청, 업데이트, 내장 브라우저, 파일 환경 명령이 이 프록시를 사용합니다.</string>
+    <string name="details">자세히</string>
     <string name="net_proxy_invalid">http://host:port 형식으로 입력하세요(socks5, socks5h, https도 가능). 호스트 앞에 user:password@를 붙일 수도 있어요.</string>
     <string name="net_proxy_container_only">https:// 프록시는 ‘파일 및 컴퓨팅 환경’의 명령에만 쓰이고, Mika 자체 연결은 계속 직접 연결해요. 모두 프록시를 거치게 하려면 http:// 또는 socks5://를 쓰세요.</string>
     <string name="net_proxy_browser_unsupported">이 휴대전화의 WebView는 앱별 프록시를 지원하지 않아 내장 브라우저는 직접 연결해요.</string>
@@ -202,7 +215,7 @@
     <string name="settings_token_budget_invalid">%1$s~%2$s 사이의 정수를 입력하세요.</string>
     <string name="settings_auto_archive">채팅 자동 보관</string>
     <string name="settings_auto_archive_sub">한동안 새 메시지가 없는 채팅을 보관함으로 옮깁니다</string>
-    <string name="settings_auto_archive_hint">선택한 기간 동안 새 메시지가 없는 채팅을 보관함으로 옮깁니다. 고정한 채팅과 작업이 실행 중인 채팅은 그대로 둡니다. 채팅 목록의 보관함에서 언제든지 되돌릴 수 있습니다.</string>
+    <string name="settings_auto_archive_hint">선택한 기간 동안 새 메시지가 없는 채팅을 보관함으로 옮깁니다.</string>
     <plurals name="settings_auto_archive_days">
         <item quantity="other">%1$d일</item>
     </plurals>

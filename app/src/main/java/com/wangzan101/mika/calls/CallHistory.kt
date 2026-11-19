@@ -41,15 +41,11 @@ data class CallFollowUp(
     enum class Status { PENDING, DONE, UNKNOWN }
 }
 
-/** Legacy phonecompat history metadata. Stored and round-tripped only; no interval UI or control logic. */
-@Serializable
-data class CallInterval(val ai: Boolean, val startMs: Long, val endMs: Long)
-
 @Serializable
 data class CallRecord(
     val id: String,
     val number: String?,
-    val direction: CallDirection?,
+    val direction: CallDirection,
     val startedAtMs: Long,
     val endedAtMs: Long,
     val result: String,
@@ -59,7 +55,6 @@ data class CallRecord(
     val audioReport: CallAudioReport? = null,
     val summary: CallSummary? = null,
     val summaryStatus: SummaryStatus = SummaryStatus.NOT_REQUESTED,
-    val intervals: List<CallInterval> = emptyList(),
 ) {
     override fun toString(): String = "CallRecord(direction=$direction, result=$result)"
 }

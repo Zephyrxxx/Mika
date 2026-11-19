@@ -68,6 +68,8 @@ data class TimelineHeader(
     val modelCalls: Int,
     /** 这次运行的步数上限;不限制或旧记录为 null。 */
     val stepLimit: Int? = null,
+    /** 这次运行用的人格(名字 · 修订号);没有为 null。 */
+    val persona: String? = null,
     /** 用了几步(和 [stepLimit] 一起显示);步数用完后的最后一轮收尾记作第上限加一步,不算一步,所以不超过上限。 */
     val stepsUsed: Int = 0,
     /** 整个运行共享的已报告 Token 预算；旧记录或不限制为 null。 */
@@ -77,6 +79,7 @@ data class TimelineHeader(
     val usedMemory: List<String> = emptyList(),
     /** 这次运行的小结;记录里没有开始事件时为 null(只显示用时)。 */
     val metrics: RunMetrics? = null,
+    val confirmedIds: Set<Int>? = null,
 )
 
 sealed interface TimelineUi {
@@ -110,10 +113,12 @@ class RunTimelineViewModel(
         val startMs = summary?.startedAtMs ?: events.first().atMs
         val endMs = summary?.endedAtMs ?: ended?.atMs
         val metrics = RunMetrics.of(events, runId)
+        val criteriaEvents = events.filterIsInstance<RunEvent.Criteria>()
+        val goals = criteriaEvents.lastOrNull { it.confirmedIds != null }
         val header = TimelineHeader(
             goal = summary?.goal ?: started?.goal.orEmpty(),
-            criteria = summary?.criteria?.takeIf { it.isNotEmpty() }
-                ?: events.filterIsInstance<RunEvent.Criteria>().lastOrNull()?.criteria.orEmpty(),
+            criteria = goals?.criteria ?: summary?.criteria?.takeIf { it.isNotEmpty() } ?: criteriaEvents.lastOrNull()?.criteria.orEmpty(),
+            confirmedIds = goals?.confirmedIds,
             outcome = outcomeLabel(summary?.outcome ?: ended?.outcome,
                 summary?.judged ?: events.filterIsInstance<RunEvent.OutcomeJudged>().lastOrNull()?.outcome),
             outcomeTone = outcomeTone(summary?.outcome ?: ended?.outcome,
@@ -125,6 +130,7 @@ class RunTimelineViewModel(
             duration = endMs?.let { duration(it - startMs) },
             modelCalls = events.count { it is RunEvent.ModelReply },
             stepLimit = started?.stepLimit,
+            persona = events.filterIsInstance<RunEvent.State>().lastOrNull { it.name == "persona" }?.detail,
             stepsUsed = metrics?.steps?.let { n -> started?.stepLimit?.let { minOf(n, it) } ?: n } ?: 0,
             tokenBudget = started?.tokenBudget,
             tokensUsed = metrics?.let { m ->
@@ -205,7 +211,7 @@ class RunTimelineViewModel(
                 val outer = results.filter { it.source == "model" && it.durationMs > 0 }
                 val measured = (outer.ifEmpty { results.filter { it.durationMs > 0 } }).sumOf { it.durationMs }
                 row.copy(
-                    said = clipSaid(row.said),
+                    said = row.said,
                     timing = StepTiming(modelTimes[row.step], measured.takeIf { it > 0 }, retryTimes[row.step] ?: 0),
                 )
             }

@@ -399,10 +399,7 @@ class CapsuleController(
             serviceAvailable = service != null && service !== failedOn, cardOpen = expanded, kept = s.kept, fullscreen = s.fullscreen,
             notices = s.notices,
         )
-        val ordinary = model.update(inputs, System.currentTimeMillis()) as? CapsuleView.Shown
-        val callLabel = phoneLabel?.takeIf { !s.locked && service != null && !flags.quitRequested() }
-        val shown = if (callLabel != null) CapsuleView.Shown(CapsuleKind.Idle, callLabel, pill = true,
-            widthEpoch = callLabel.hashCode()) else ordinary
+        val shown = model.update(inputs, System.currentTimeMillis()) as? CapsuleView.Shown
         schedule(model.nextChangeAt)
         if (shown == null || service == null) {
             hide()
@@ -470,18 +467,6 @@ class CapsuleController(
         cardW.onBack(::back)
         watchIme(service)
         return ball
-    }
-
-    private var phoneLabel: String? = null
-    private var phoneAction: (() -> Unit)? = null
-    internal fun phoneControl(label: String?, action: () -> Unit) {
-        if (label == null && phoneAction !== action) return
-        if (phoneLabel == label && (label == null || phoneAction === action)) return
-        phoneLabel = label
-        phoneAction = action.takeIf { label != null }
-        resetTaps()
-        if (label != null && expanded) resetCard()
-        refresh()
     }
 
     private fun refresh() {
@@ -1260,11 +1245,6 @@ class CapsuleController(
 
     /** 胶囊上闪着一句时点它:那句说要打开 Mika 就打开,否则只收掉那句;这一下不参与单击或双击计时。 */
     private fun tapCapsule() {
-        if (phoneLabel != null) {
-            resetTaps()
-            phoneAction?.invoke()
-            return
-        }
         val n = note
         clearNote()
         if (n != null) {
@@ -1491,7 +1471,7 @@ class CapsuleController(
     private fun CapsuleOverlay() {
         val shown = view ?: return
         if (card != null && cardOut && !closing) return
-        val n = note.takeIf { phoneLabel == null }
+        val n = note
         val v = if (n == null || shown.kind == CapsuleKind.HandedOver) shown
             else shown.copy(kind = n.kind, text = n.text, detail = null, count = 0, needCount = 0, pill = true, widthEpoch = -n.id)
         if (edgeHidden) {
@@ -1524,7 +1504,7 @@ class CapsuleController(
                     onSwapSide = if (v.kind == CapsuleKind.HandedOver) null else ::swapSide,
                     alpha = alpha,
                     holding = talking && talk.byTouch,
-                    onTalk = if (phoneLabel == null && canTalk()) ::toggleTalk else null,
+                    onTalk = if (canTalk()) ::toggleTalk else null,
                     talkLabel = tr(if (talking && !talk.byTouch) R.string.capsule_voice_send else R.string.capsule_voice_talk),
                 )
             }

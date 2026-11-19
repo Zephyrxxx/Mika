@@ -48,7 +48,6 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import androidx.compose.ui.platform.LocalContext
-import com.wangzan101.mika.settings.FeatureFlags
 import com.wangzan101.mika.cap.web.WebHandover
 import com.wangzan101.mika.cap.web.WebSites
 import com.wangzan101.mika.browser.UserBrowser
@@ -69,6 +68,7 @@ import com.wangzan101.mika.record.RunStore
 import com.wangzan101.mika.replay.FileRouteStore
 import com.wangzan101.mika.task.TaskService
 import com.wangzan101.mika.settings.Prerequisites
+import com.wangzan101.mika.settings.FeatureFlags
 import com.wangzan101.mika.settings.ProviderStore
 import com.wangzan101.mika.settings.SystemStatusMonitor
 import com.wangzan101.mika.cap.phone.PhoneServices
@@ -243,6 +243,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        foreground = true
         monitor.refresh()
         // 回到前台时按最新设置查一次自动归档(启动时也查过,这里照顾长期不退出的进程)
         (application as MikaApp).autoArchiveNow()
@@ -251,6 +252,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         updateWatch?.cancel()
         monitor.stop()
+        foreground = false
         super.onStop()
     }
 
@@ -279,10 +281,18 @@ class MainActivity : ComponentActivity() {
             Fix.OpenAttentionChannel -> openChannelSettings(TaskService.CHANNEL_ATTENTION)
             Fix.OpenResultChannel -> openChannelSettings(TaskService.CHANNEL_RESULT)
             Fix.OpenProgressChannel -> openChannelSettings(TaskService.CHANNEL_PROGRESS)
+            Fix.OpenLiveTaskSettings -> if (Build.VERSION.SDK_INT >= 36) {
+                try {
+                    startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+                } catch (_: ActivityNotFoundException) {
+                    openNotificationSettings()
+                }
+            } else openNotificationSettings()
             Fix.OpenPairingChannel -> openChannelSettings(PairingNotifier.ensureChannel(this).id)
             Fix.AddModel -> Unit // 设置页自己处理
             // 换页由 MikaRoot 处理
-            Fix.OpenPhoneSetup, Fix.RepairPhoneHelper -> Unit
+            Fix.OpenPhoneSetup, Fix.OpenPhoneOps, Fix.RepairPhoneHelper -> Unit
             Fix.RetryPhoneHelper -> phone.pairing.scope.launch {
                 phone.sharedShell.reconnect()
                 phone.shellControl.retry()
@@ -341,6 +351,9 @@ class MainActivity : ComponentActivity() {
         private const val STATE_SHARE_IN_CURRENT = "share_in_current"
         private const val STATE_SHARE_HANDLED = "share_handled"
         private const val TAG = "MikaMain"
+
+        /** 主界面(聊天)此刻是否在前台可见。任务完成时据此决定要不要弹完成通知(#731)。 */
+        @Volatile var foreground: Boolean = false
     }
 }
 
@@ -387,12 +400,17 @@ private fun MikaRoot(
     var setupRepair by rememberSaveable { mutableStateOf(false) }
     // 首次上手正在走哪一步;为空时不在上手流程里。配置模型页从哪儿来就回哪儿去
     var onboarding by rememberSaveable { mutableStateOf<OnboardingStep?>(null) }
+    var openPhoneOps by rememberSaveable { mutableStateOf(false) }
     val onFix: (Fix) -> Unit = { fix ->
         when (fix) {
             Fix.AddModel -> nav.push(Route.Models)
             Fix.OpenPhoneSetup, Fix.RepairPhoneHelper -> {
                 setupRepair = fix == Fix.RepairPhoneHelper
                 nav.push(Route.PhoneSetup)
+            }
+            Fix.OpenPhoneOps -> {
+                openPhoneOps = true
+                nav.push(Route.Settings)
             }
             else -> activityFix(fix)
         }
@@ -407,10 +425,14 @@ private fun MikaRoot(
     val hasMain = roles.main != null
     val check = Prerequisites.check(status, hasMain)
     val app = context.applicationContext as MikaApp
+    val personasOn = FeatureFlags.get(context).persona()
     // 查到的新版本:侧栏、设置首页、关于页的红点都看它
     val updateState by app.updates.state.collectAsState()
     val autoUpdate by app.automaticUpdates.enabled.collectAsState()
     val readyUpdate by app.automaticUpdates.ready.collectAsState()
+    val mirrorEnabled by app.updateMirrors.enabled.collectAsState()
+    val mirrors by app.updateMirrors.mirrors.collectAsState()
+    val mirrorScope = rememberCoroutineScope()
     LaunchedEffect(requestedConversation) {
         if (requestedConversation != null) {
             if (requestedConversation == "personal-main") nav.show(Route.Personal)
@@ -585,6 +607,7 @@ private fun MikaRoot(
                             },
                             voice = app.voice,
                             openSpeechModel = { nav.push(Route.SpeechModel) },
+                            onOpenPersonas = if (personasOn) ({ nav.push(Route.Persona) }) else ({}),
                             onOpenTeach = { hint ->
                                 app.teach.prefill(hint)
                                 nav.push(Route.Teach)
@@ -620,11 +643,15 @@ private fun MikaRoot(
                 onOpenFiles = { filesFromDrawer = false; filesConversation = app.chat.ui.value.conversationId; nav.push(Route.Files) },
                 onOpenPersonal = { nav.show(Route.Personal) },
                 onOpenPlans = { nav.push(Route.Plans) },
+                onOpenPersonas = if (personasOn) ({ nav.push(Route.Persona) }) else null,
                 autonomous = autonomous, onAutonomous = app.approvalControl::setAutonomous,
                 updateVersion = updateState.update?.version, onOpenAbout = { nav.push(Route.About) },
-                mcpServers = app.mcpServers)
+                mcpServers = app.mcpServers,
+                openPhoneOps = openPhoneOps, onPhoneOpsOpened = { openPhoneOps = false })
         }
-        Route.Models -> ModelsScreen(store, onBack = back, onOpenSpeech = { nav.push(Route.SpeechModel) }, onOpenUsage = { nav.push(Route.Usage) })
+        Route.Models -> ModelsScreen(store, onBack = back, onOpenSpeech = { nav.push(Route.SpeechModel) }, onOpenVoice = { nav.push(Route.VoiceModel) }, onOpenUsage = { nav.push(Route.Usage) })
+        Route.VoiceModel -> VoiceModelScreen(store, onBack = back)
+        Route.Persona -> if (personasOn) PersonaScreen(app.personas, onBack = back) else LaunchedEffect(Unit) { nav.back() }
         Route.Usage -> UsageScreen(app.usage, store, onBack = back, onOpenUrl = { openInBrowser(context, it) })
         Route.SpeechModel -> SpeechModelScreen(store, onBack = back)
         Route.About -> AboutScreen(
@@ -641,6 +668,15 @@ private fun MikaRoot(
             onCheck = app.updates::checkInBackground,
             autoUpdate = autoUpdate,
             onAutoUpdate = app.automaticUpdates::setEnabled,
+            mirrorEnabled = mirrorEnabled,
+            mirrorCount = mirrors.size,
+            onMirrorEnabled = { on ->
+                mirrorScope.launch {
+                    val error = withContext(Dispatchers.IO) { app.updateMirrors.setEnabled(on) }
+                    if (error != null) Toast.makeText(context, R.string.about_mirrors_save_failed, Toast.LENGTH_SHORT).show()
+                }
+            },
+            onOpenMirrors = { nav.push(Route.UpdateMirrors) },
             onOpenUrl = { openInBrowser(context, it) },
             onSaveQr = { QrImage.saveToPictures(context) },
             onOpenLicense = { nav.push(Route.License) },
@@ -649,6 +685,7 @@ private fun MikaRoot(
                 Diagnostics.render(DiagnosticsCollector.collect(context, status))
             },
         )
+        Route.UpdateMirrors -> UpdateMirrorsScreen(app.updateMirrors, onBack = back)
         Route.License -> LicensesScreen(onBack = back)
         Route.Browser -> BrowserScreen(remember { UserBrowser.of(context) }, onBack = back)
         Route.Files -> FileLibraryScreen(app.chat, filesConversation, filesFromDrawer, onBack = back, onAdded = { id ->

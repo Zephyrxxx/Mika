@@ -13,7 +13,7 @@ import kotlinx.serialization.json.Json
 import java.util.UUID
 
 @Serializable
-enum class CallVoiceProtocol { VOLC_DUPLEX }
+enum class CallVoiceProtocol { VOLC_DUPLEX, OPENAI_REALTIME }
 
 @Serializable
 data class CallVoiceProfile(
@@ -56,7 +56,6 @@ class CallVoiceProfileStore internal constructor(
     private val backend: CallVoiceProfileBackend,
     private val cipher: KeyCipher? = null,
     private val newId: () -> String = { UUID.randomUUID().toString() },
-    private val verificationScope: String? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private var stored = StoredVoiceProfiles()
@@ -101,8 +100,12 @@ class CallVoiceProfileStore internal constructor(
         require(credentials == null || credentials.valid) { "实时语音凭据不完整" }
         val id = profile.id.ifBlank(newId)
         val existing = stored.profiles.firstOrNull { it.id == id }
+        require(existing == null || existing.protocol == profile.protocol) { "请为其他服务商新建配置" }
+        if (profile.protocol == CallVoiceProtocol.OPENAI_REALTIME) {
+            require(credentials == null || credentials.apiKey.isNotBlank()) { "请填写 OpenAI API Key" }
+        }
         val normalized = profile.copy(id = id, name = profile.name.trim(), endpoint = profile.endpoint.trim(),
-            model = profile.model.trim(), speaker = profile.speaker.trim().ifBlank { VolcRealtimeConfig.DEFAULT_SPEAKER })
+            model = profile.model.trim(), speaker = profile.speaker.trim().ifBlank { if (profile.protocol == CallVoiceProtocol.OPENAI_REALTIME) OpenAiCallProtocol.VOICE else VolcRealtimeConfig.DEFAULT_SPEAKER })
         validate(normalized)
         require(stored.profiles.size < CallVoiceProfile.MAX_PROFILES || existing != null) { "最多保存 ${CallVoiceProfile.MAX_PROFILES} 套实时语音配置" }
         val serviceChanged = existing != null && (existing.protocol != normalized.protocol || existing.endpoint != normalized.endpoint || existing.model != normalized.model)
@@ -211,15 +214,14 @@ class CallVoiceProfileStore internal constructor(
         require(Regex("[A-Za-z0-9_-]{1,100}").matches(profile.id)) { "配置编号无效" }
         require(profile.name.isNotBlank() && profile.name.length <= CallVoiceProfile.MAX_NAME) { "配置名称需为 1–${CallVoiceProfile.MAX_NAME} 字" }
         require(profile.endpoint.length <= CallVoiceProfile.MAX_ENDPOINT) { "接口地址过长" }
+        if (profile.protocol == CallVoiceProtocol.OPENAI_REALTIME) require(profile.endpoint == OpenAiCallProtocol.ENDPOINT) { "OpenAI 接口地址无效" }
         val uri = runCatching { java.net.URI(profile.endpoint) }.getOrNull()
         require(uri != null && uri.scheme == "wss" && !uri.host.isNullOrBlank() && uri.userInfo == null) { "接口地址必须是有效的 wss 地址" }
         require(profile.model.isNotBlank() && profile.model.length <= CallVoiceProfile.MAX_MODEL && profile.model.all { it.code in 33..126 }) { "实时模型名称无效" }
         require(profile.speaker.length <= CallPolicy.MAX_SPEAKER_CHARS && profile.speaker.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it in "_-" }) { "声音编号无效" }
     }
 
-    // Legacy evidence stays stored but cannot authorize the different clean-fork audio path.
-    private fun verificationKey(mode: CallAudioMode, fingerprint: String): String =
-        (verificationScope?.let { "$it:" } ?: "") + "${mode.name}:$fingerprint"
+    private fun verificationKey(mode: CallAudioMode, fingerprint: String) = "${mode.name}:$fingerprint"
 
     companion object {
         private const val MAX_STORAGE_CHARS = 500_000
@@ -229,7 +231,7 @@ class CallVoiceProfileStore internal constructor(
             return CallVoiceProfileStore(object : CallVoiceProfileBackend {
                 override fun read(): String? = prefs.getString("encrypted_profiles_v1", null)
                 override fun write(value: String): Boolean = prefs.edit().putString("encrypted_profiles_v1", value).commit()
-            }, cipher, verificationScope = CallVerificationCompatibility.scopeForPackage(context.packageName))
+            }, cipher)
         }
     }
 }

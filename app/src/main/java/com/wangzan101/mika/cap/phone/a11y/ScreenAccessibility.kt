@@ -30,11 +30,6 @@ open class ScreenAccessibility : AccessibilityService() {
     private class DisplayEvent(val displayId: Int, val event: AccessibilityEvent)
 
 
-    internal suspend fun handBackCall(id: String) = callOverlay?.handBack(id)
-        ?: com.wangzan101.mika.calls.NativeHandBackResult.NOT_ACTIVE
-
-    private var callOverlay: com.wangzan101.mika.calls.NativeCallOverlay? = null
-
     override fun onServiceConnected() {
         super.onServiceConnected()
         // 不少 App 把显示结果的文字控件标成「对无障碍不重要」,不读它们就看不到结果;配置文件里已声明,
@@ -46,8 +41,6 @@ open class ScreenAccessibility : AccessibilityService() {
             }
         }
         _instance.value = this
-        callOverlay?.close()
-        callOverlay = com.wangzan101.mika.calls.NativeCallOverlay(this).also { it.start() }
         // 配对时读码、引导页打勾都看它;连上和断开各记一句,排查「明明开着却当没开」
         Log.i(TAG, "accessibility service connected")
     }
@@ -64,8 +57,6 @@ open class ScreenAccessibility : AccessibilityService() {
     }
 
     private fun clearInstance() {
-        callOverlay?.close()
-        callOverlay = null
         _instance.compareAndSet(this, null)
         overlayHost?.closeAll()
         overlayHost = null
@@ -135,6 +126,14 @@ open class ScreenAccessibility : AccessibilityService() {
     suspend fun taps(displayId: Int, x: Float, y: Float, count: Int, holdMs: Long, gapMs: Long): Boolean {
         val at = Path().apply { moveTo(x, y) }
         return dispatch(displayId, (0 until count).map { i -> GestureDescription.StrokeDescription(at, i * (holdMs + gapMs), holdMs.coerceAtLeast(1)) })
+    }
+
+    /** 无障碍的「返回」全局动作:按键注入到虚拟屏失效时的兜底。作用在服务当前聚焦的屏上,只记结果、不记按键内容。 */
+    fun performGlobalBack(): Boolean {
+        val service = instance.value ?: return false
+        val ok = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        Log.i(TAG, "performGlobalBack ok=$ok")
+        return ok
     }
 
     private suspend fun dispatch(displayId: Int, strokes: List<GestureDescription.StrokeDescription>): Boolean {

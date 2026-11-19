@@ -27,6 +27,7 @@ import com.wangzan101.mika.core.agent.Turn
 import com.wangzan101.mika.core.record.RunEvent
 import com.wangzan101.mika.settings.AccessibilityState
 import com.wangzan101.mika.settings.Prerequisites
+import com.wangzan101.mika.settings.PersonaStore
 import com.wangzan101.mika.settings.Problem
 import com.wangzan101.mika.core.shell.BuiltinShellStatus
 import com.wangzan101.mika.settings.SystemStatus
@@ -59,6 +60,33 @@ class ChatViewModelTest {
     @get:Rule val texts = ChineseTexts()
 
     @get:Rule val tmp = TemporaryFolder()
+
+    @Test fun readAloudReportsFailureAndAllowsRetry() = runTest {
+        val errors = mutableListOf<String>()
+        var attempts = 0
+        val app = com.wangzan101.mika.MikaApp()
+        val vm = ChatViewModel(backgroundScope, state, stage, actions, ConversationStore(tmp.newFolder()),
+            speakText = { text -> app.speak(text) { if (++attempts == 1) throw java.io.IOException("offline") } },
+            voiceFailed = errors::add)
+        vm.speak("你好")
+        runCurrent()
+        assertEquals(1, errors.size)
+        assertTrue(errors.single().contains("offline"))
+        vm.speak("再试一次")
+        runCurrent()
+        assertEquals(2, attempts)
+        assertEquals(1, errors.size)
+    }
+
+    @Test fun readAloudCancellationDoesNotBecomeAPlaybackError() = runTest {
+        val errors = mutableListOf<String>()
+        val vm = ChatViewModel(backgroundScope, state, stage, actions, ConversationStore(tmp.newFolder()),
+            speakText = { throw kotlinx.coroutines.CancellationException("stopped") },
+            voiceFailed = errors::add)
+        vm.speak("你好")
+        runCurrent()
+        assertTrue(errors.isEmpty())
+    }
 
     private val state = MutableStateFlow<TaskState>(TaskState.Idle)
     private val stage = MutableStateFlow(Takeover.Stage.None)
@@ -155,6 +183,27 @@ class ChatViewModelTest {
         runCurrent()
         assertEquals(listOf("notice:n1", "run-1", "notice:n2"), vm.ui.value.exchanges.map { it.runId })
         assertEquals(listOf("我从通知里挑出 1 条", "已回复", "我从通知里挑出 2 条"), vm.ui.value.exchanges.map { (it.status as ExchangeStatus.Done).answer })
+    }
+
+    @Test fun workflowConversationCanOpenWhileRunningAndPreservesDraft() = runTest {
+        val active = MutableStateFlow<List<String>>(emptyList())
+        val vm = ChatViewModel(backgroundScope, state, stage, actions, ConversationStore(tmp.newFolder()),
+            activeConversations = active, parallelFlag = { false }, runGoal = { "workflow step" })
+        runCurrent()
+        vm.openConversation("original")
+        vm.input("draft to keep")
+        vm.quote(QuoteMessage.From.Mika, "quoted result")
+        active.value = listOf("step")
+        emit(TaskState.Running(1, "working"))
+        vm.openWorkflowConversation("step")
+        assertEquals("step", vm.ui.value.conversationId)
+        assertTrue(calls.contains("show:step"))
+        assertFalse(calls.any { it.startsWith("start:") })
+        active.value = emptyList()
+        emit(TaskState.Idle)
+        vm.openWorkflowConversation("original")
+        assertEquals("draft to keep", vm.ui.value.input)
+        assertEquals("quoted result", vm.ui.value.quote?.text)
     }
 
     @Test fun draftsStayWithTheirConversationInSerialAndParallelModes() = runTest {
@@ -843,7 +892,7 @@ class ChatViewModelTest {
         assertNull((vm.ui.value.exchanges.last().status as ExchangeStatus.Done).unverifiedLine)
     }
 
-    @Test fun liveLineUsesTheModelsReasonAndCollapsesToASummary() = runTest {
+    @Test fun liveLineUsesTheModelsReason() = runTest {
         var now = 1_000L
         val screen = MutableStateFlow(false)
         val vm = ChatViewModel(backgroundScope, state, stage, actions, ConversationStore(tmp.newFolder()), screenOpen = screen, clock = { now },
@@ -878,10 +927,7 @@ class ChatViewModelTest {
         emit(TaskState.Succeeded("有 3 趟\n依据:12306 查询结果页"))
         ex = vm.ui.value.exchanges.single()
         assertEquals(80_000L, ex.elapsedMs)
-        assertEquals("做了 3 步 · 1 分 20 秒", stepsSummary(ex))
         assertFalse(vm.ui.value.operatingPhone)
-        // 不知道用时就只说步数
-        assertEquals("做了 3 步", stepsSummary(ex.copy(elapsedMs = null)))
     }
 
     /** 顶栏副标题「正在操作 …」:最近一件有对象的事所在的 App(包名换成 App 名)。 */
@@ -3756,4 +3802,35 @@ class ChatViewModelTest {
         assertEquals(1, calls.count { it.startsWith("start:") })
     }
 
+    /** 新对话选的人格先写进旁文件,再交给服务;任务开局才能读到。 */
+    @Test fun personaIsWrittenBeforeTheTaskStarts() = runTest {
+        val conversations = ConversationStore(tmp.newFolder())
+        val personas = PersonaStore(tmp.newFolder())
+        val p = personas.add("写作助手", "", "先给结论。").getOrThrow()
+        val vm = ChatViewModel(
+            backgroundScope, state, stage, actions, conversations,
+            appLabel = { it }, activities = acts, steers = steerFlow, personaStore = personas,
+        ).also { runCurrent() }
+
+        assertTrue(vm.selectPersona(p.id))
+        assertEquals(p.id, vm.ui.value.personaId)
+        assertTrue(vm.send("查天气", ok))
+        val id = vm.ui.value.conversationId!!
+        assertEquals(p.id, conversations.persona(id)?.personaId)
+    }
+
+    /** 功能关闭时界面不读也不写人格旁文件;任务层也会忽略绑定。 */
+    @Test fun personaBindingIsIgnoredWhenTheFeatureIsOff() = runTest {
+        val conversations = ConversationStore(tmp.newFolder())
+        val id = conversations.newConversation()
+        assertTrue(conversations.setPersona(id, "p1"))
+        val vm = ChatViewModel(
+            backgroundScope, state, stage, actions, conversations,
+            appLabel = { it }, activities = acts, steers = steerFlow, personaStore = null,
+        ).also { runCurrent() }
+
+        vm.openConversation(id)
+        assertNull(vm.ui.value.personaId)
+        assertFalse(vm.selectPersona("p1"))
+    }
 }

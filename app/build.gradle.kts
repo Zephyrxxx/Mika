@@ -16,11 +16,15 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.wangzan101.mika.phonecompat"
+        applicationId = if (providers.gradleProperty("devInstall").isPresent) {
+            "com.wangzan101.mika"
+        } else {
+            "com.wangzan101.mika.phonecompat"
+        }
         minSdk = 29
         targetSdk = 35
-        versionCode = 100626
-        versionName = "1.0.626"
+        versionCode = 100627
+        versionName = "1.0.627"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "GIT_HASH", "\"$gitHash\"")
         // 关于页版本号后的 Beta 标记;出正式版时改成 false
@@ -118,6 +122,8 @@ dependencies {
     implementation(libs.mlkit.text.recognition.chinese)
     // 微信绑定二维码只在本机编码，不调用在线图片服务。
     implementation(libs.zxing.core)
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

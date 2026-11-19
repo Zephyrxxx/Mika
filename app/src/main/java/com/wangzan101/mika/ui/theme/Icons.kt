@@ -38,6 +38,8 @@ object MikaIcons {
     val Plus = stroke("plus", "M12 5 v14 M5 12 h14")
     /** 发送。 */
     val Up = stroke("up", "M12 19 V5 M6 11 l6 -6 l6 6", width = 2.2f)
+    /** 回到底部。 */
+    val Down = stroke("down", "M12 5 V19 M6 13 l6 6 l6 -6", width = 2.2f)
     val Check = stroke("check", "M5 12.5 l4.5 4.5 L19 7.5", width = 2.2f)
     val Close = stroke("close", "M6 6 l12 12 M18 6 L6 18", width = 2f)
     /** 多选:勾选清单。 */
@@ -67,6 +69,11 @@ object MikaIcons {
     )
     val Doc = stroke(
         "doc", "M14 3 H7 a2 2 0 0 0 -2 2 v14 a2 2 0 0 0 2 2 h10 a2 2 0 0 0 2 -2 V8 z", "M14 3 v5 h5 M9 13 h6 M9 17 h4",
+    )
+    /** 文件夹:设备目录。 */
+    val Folder = stroke(
+        "folder",
+        "M3.5 6.5 a2 2 0 0 1 2 -2 h4 l2 2.5 h7 a2 2 0 0 1 2 2 v8.5 a2 2 0 0 1 -2 2 h-13 a2 2 0 0 1 -2 -2 z",
     )
     /** 柱状图:Token 用量。 */
     val Chart = stroke("chart", "M4 20 h16", "M7 16 v-4 M12 16 V6 M17 16 v-7")
@@ -241,6 +248,8 @@ object MikaIcons {
         "stop",
         "M8.28 6 h7.44 a2.28 2.28 0 0 1 2.28 2.28 v7.44 a2.28 2.28 0 0 1 -2.28 2.28 H8.28 A2.28 2.28 0 0 1 6 15.72 V8.28 A2.28 2.28 0 0 1 8.28 6 z",
     )
+    /** 实心:播放(操作回放)。 */
+    val Play = filled("play", "M8 5 v14 l11 -7 z")
     /** 实心:感叹号。 */
     val Exclaim = filled(
         "exclaim", "M12 4.5 a1.5 1.5 0 0 1 1.5 1.5 v7.5 a1.5 1.5 0 0 1 -3 0 V6 A1.5 1.5 0 0 1 12 4.5 z",
